@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>LiftCraft</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="card">
+    <h1 class="logo">Lift<span>Craft</span></h1>
+
+    <section id="auth">
+      <div class="tabs" role="tablist">
+        <button id="tab-signup" class="active" role="tab">Sign up</button>
+        <button id="tab-login" role="tab">Log in</button>
+      </div>
+
+      <form id="signup-form" novalidate>
+        <div class="row">
+          <label>First name <input name="firstName" autocomplete="given-name" required></label>
+          <label>Last name <input name="lastName" autocomplete="family-name" required></label>
+        </div>
+        <label>Email <input name="email" type="email" autocomplete="email" required></label>
+        <label>Password <input name="password" type="password" minlength="8" autocomplete="new-password" required>
+          <small>At least 8 characters</small></label>
+        <p class="error" role="alert"></p>
+        <button class="primary" type="submit">Create account</button>
+      </form>
+
+      <form id="login-form" novalidate hidden>
+        <label>Email <input name="email" type="email" autocomplete="email" required></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+        <p class="error" role="alert"></p>
+        <button class="primary" type="submit">Log in</button>
+      </form>
+    </section>
+
+  </main>
+  <div id="app" hidden></div>
+
+  <nav id="tabbar" hidden aria-label="Main">
+    <button data-tab="home" aria-label="Home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      <span>Home</span>
+    </button>
+    <button data-tab="progress" aria-label="Progress">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="10"/></svg>
+      <span>Progress</span>
+    </button>
+    <button data-tab="add" class="add" aria-label="Add exercise">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>Add</span>
+    </button>
+    <button data-tab="profile" aria-label="Profile">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      <span>Profile</span>
+    </button>
+    <button data-tab="logout" aria-label="Log out">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span>Logout</span>
+    </button>
+  </nav>
+
+  <dialog id="dlg"><form method="dialog" id="dlg-form"><h3 id="dlg-title"></h3><input id="dlg-input" maxlength="80" autocomplete="off"><div class="dlg-actions"><button value="cancel" type="button" id="dlg-cancel">Cancel</button><button class="primary" value="ok">Save</button></div></form></dialog>
+
+  <dialog id="choose"><form method="dialog">
+    <h3>Add to <span id="choose-ctx">LiftCraft</span></h3>
+    <div class="choose-grid">
+      <button value="folder" class="choose-opt"><span class="ci">📁</span>Folder</button>
+      <button value="exercise" class="choose-opt"><span class="ci">🏋️</span>Exercise</button>
+    </div>
+    <button value="cancel" type="button" id="choose-cancel" class="ghost">Cancel</button>
+  </form></dialog>
+
+  <dialog id="colors"><form method="dialog">
+    <h3>Choose a color</h3>
+    <div class="color-grid" id="color-grid"></div>
+    <button value="cancel" type="button" id="colors-cancel" class="ghost">Cancel</button>
+  </form></dialog>
+  <script src="/app.js"></script>
+</body>
+</html>
