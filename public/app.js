@@ -368,8 +368,8 @@ const DOW = ["S", "M", "T", "W", "T", "F", "S"];
 function lastEntryLabel(recorded) {
   const last = [...recorded].sort().pop(); // keys are YYYY-MM-DD, so lexical sort = chronological
   return last
-    ? `<i class="dot"></i> Last entry ${fmtDay(keyToDate(last))}`
-    : `<i class="dot"></i> No entries yet`;
+    ? `<button class="link last-entry" data-act="go-last" data-day="${last}"><i class="dot"></i> Last entry ${fmtDay(keyToDate(last))}</button>`
+    : `<span><i class="dot"></i> No entries yet</span>`;
 }
 
 function calendarHtml(recorded) {
@@ -402,7 +402,7 @@ function calendarHtml(recorded) {
         <button class="icon-btn" data-act="week" data-d="1" aria-label="Next week">›</button>
       </div>
       <div class="week-grid">${cells}</div>
-      <div class="cal-foot"><span>${lastEntryLabel(recorded)}</span><button class="link" data-act="today">Today</button></div>
+      <div class="cal-foot">${lastEntryLabel(recorded)}<button class="link" data-act="today">Today</button></div>
     </section>`;
 }
 
@@ -686,6 +686,12 @@ const actions = {
   "pick-day"(d) {
     flushNote();
     selDay = d.day;
+    drawExercise();
+  },
+  "go-last"(d) {
+    flushNote();
+    selDay = d.day;
+    weekStart = startOfWeek(keyToDate(d.day)); // jump the calendar to the week holding that entry
     drawExercise();
   },
   week(d) {
