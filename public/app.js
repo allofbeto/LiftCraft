@@ -365,6 +365,13 @@ function startOfWeek(d) {
 
 const DOW = ["S", "M", "T", "W", "T", "F", "S"];
 
+function lastEntryLabel(recorded) {
+  const last = [...recorded].sort().pop(); // keys are YYYY-MM-DD, so lexical sort = chronological
+  return last
+    ? `<i class="dot"></i> Last entry ${fmtDay(keyToDate(last))}`
+    : `<i class="dot"></i> No entries yet`;
+}
+
 function calendarHtml(recorded) {
   const today = localKey(new Date());
   const days = [];
@@ -395,7 +402,7 @@ function calendarHtml(recorded) {
         <button class="icon-btn" data-act="week" data-d="1" aria-label="Next week">›</button>
       </div>
       <div class="week-grid">${cells}</div>
-      <div class="cal-foot"><span><i class="dot"></i> Recorded days</span><button class="link" data-act="today">Today</button></div>
+      <div class="cal-foot"><span>${lastEntryLabel(recorded)}</span><button class="link" data-act="today">Today</button></div>
     </section>`;
 }
 
