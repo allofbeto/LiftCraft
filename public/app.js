@@ -334,6 +334,8 @@ function renderProfile() {
       <div class="prof-row"><span class="k">Email</span><span class="v">${esc(user.email)}</span></div>
       <div class="prof-row"><span class="k">Exercises</span><span class="v">${exercises.length}</span></div>
       <div class="prof-row"><span class="k">Folders</span><span class="v">${folders.length}</span></div>
+      <div class="prof-row"><span class="k">Puzzles solved</span><span class="v">${sudokuStats.completed}</span></div>
+      <div class="prof-row"><span class="k">Brain break time</span><span class="v">${fmtDuration(sudokuStats.timeMs)}</span></div>
     </div>
     <div class="actions" style="grid-template-columns:1fr; margin-top:16px">
       <button class="ghost" data-act="logout">Log out</button>
@@ -407,6 +409,10 @@ function calendarHtml(recorded) {
 }
 
 const SAVE_ICON = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>`;
+// Split-pane glyph: one box divided down the middle, for logging left/right reps.
+const SPLIT_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`;
+// Brain glyph: two hemispheres, for the Sudoku brain break.
+const BRAIN_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a2.5 2.5 0 0 0-5 0 2.5 2.5 0 0 0-2 4 2.5 2.5 0 0 0 .5 4.5A2.5 2.5 0 0 0 7 18a2.5 2.5 0 0 0 5 0z"/><path d="M12 5a2.5 2.5 0 0 1 5 0 2.5 2.5 0 0 1 2 4 2.5 2.5 0 0 1-.5 4.5A2.5 2.5 0 0 1 17 18a2.5 2.5 0 0 1-5 0z"/></svg>`;
 
 function drawExercise() {
   const y = window.scrollY;
@@ -420,7 +426,9 @@ function drawExercise() {
   app.innerHTML = `
     ${topbar("", {
       back,
-      right: `<button class="icon-btn" data-act="toggle-details" aria-label="Edit details">✏️</button>
+      right: `<button class="icon-btn" data-act="open-sudoku" aria-label="Brain break" title="Brain break">${BRAIN_ICON}</button>
+              <button class="icon-btn${x.split ? " on" : ""}" data-act="toggle-split" aria-pressed="${x.split ? "true" : "false"}" aria-label="${x.split ? "Stop logging left and right separately" : "Split into left and right"}" title="Left / right split">${SPLIT_ICON}</button>
+              <button class="icon-btn" data-act="toggle-details" aria-label="Edit details">✏️</button>
               <button class="icon-btn danger" data-act="delete-exercise" aria-label="Delete exercise">🗑</button>`,
     })}
     <header class="hdr">
@@ -450,9 +458,14 @@ function drawExercise() {
       <form id="log-form" novalidate>
         <div class="log-row">
           <div class="fld"><div class="lbl">Weight (<button type="button" class="unit-btn" data-act="toggle-unit">${unitLabel}</button>)</div>
-            <input class="big" name="weight" type="number" inputmode="decimal" min="0" step="any" aria-label="Weight" value="${esc(lastWeight)}"></div>
-          <div class="fld"><div class="lbl">Reps</div>
-            <input class="big" name="reps" type="number" inputmode="numeric" min="0" step="1" aria-label="Reps" placeholder="0"></div>
+            <input class="big" name="weight" type="number" inputmode="decimal" min="0" step="any" aria-label="Weight" placeholder="${esc(lastWeight)}"></div>
+          ${x.split
+            ? `<div class="fld"><div class="lbl">Left</div>
+                 <input class="big" name="repsL" type="number" inputmode="numeric" min="0" step="1" aria-label="Left reps" placeholder="0"></div>
+               <div class="fld"><div class="lbl">Right</div>
+                 <input class="big" name="repsR" type="number" inputmode="numeric" min="0" step="1" aria-label="Right reps" placeholder="0"></div>`
+            : `<div class="fld"><div class="lbl">Reps</div>
+                 <input class="big" name="reps" type="number" inputmode="numeric" min="0" step="1" aria-label="Reps" placeholder="0"></div>`}
           <button class="save-btn" type="submit" aria-label="Save set">${SAVE_ICON}</button>
         </div>
         <p class="error" role="alert"></p>
@@ -546,6 +559,7 @@ async function flushNote() {
 window.addEventListener("pagehide", () => {
   flushNote();
   flushExercise();
+  sudokuAccrue(); // bank brain-break time if the modal is open when leaving
 });
 
 app.addEventListener("input", (e) => {
@@ -564,7 +578,7 @@ app.addEventListener("input", (e) => {
 app.addEventListener("change", (e) => {
   // `change` on an input only fires when its value was modified since focus,
   // so this is exactly "reps box touched, then clicked/tabbed out" → log it.
-  if (e.target.name === "reps") return commitSet(false);
+  if (e.target.name === "reps" || e.target.name === "repsR") return commitSet(false);
   if (e.target.dataset.f === "folder") {
     const v = e.target.value;
     detail.exercise.folderId = v === "" ? null : Number(v);
@@ -582,22 +596,45 @@ async function commitSet(explicit) {
   const form = $("#log-form");
   if (!form) return;
   const err = form.querySelector(".error");
-  const reps = form.reps.value.trim();
-  const weight = form.weight.value.trim();
+  const split = detail.exercise.split;
+  // Empty weight falls back to the last entered weight (shown as the ghost placeholder).
+  const weight = form.weight.value.trim() || lastWeight;
   err.textContent = "";
-  if (reps === "") {
-    if (explicit) err.textContent = "Enter the number of reps.";
-    return; // blur with nothing typed: stay quiet
-  }
-  if (!/^\d+$/.test(reps)) {
-    if (explicit) err.textContent = "Reps must be a whole number.";
-    return;
+
+  // Reps: one field normally, separate left/right when the exercise is split.
+  const whole = (v) => /^\d+$/.test(v);
+  let repsPart;
+  if (split) {
+    const l = form.repsL.value.trim();
+    const r = form.repsR.value.trim();
+    if (l === "" && r === "") {
+      if (explicit) err.textContent = "Enter left and right reps.";
+      return; // blur with nothing typed: stay quiet
+    }
+    if (!whole(l) || !whole(r)) {
+      if (explicit) err.textContent = "Reps must be whole numbers.";
+      return;
+    }
+    repsPart = `L ${l} / R ${r}`;
+  } else {
+    const reps = form.reps.value.trim();
+    if (reps === "") {
+      if (explicit) err.textContent = "Enter the number of reps.";
+      return; // blur with nothing typed: stay quiet
+    }
+    if (!whole(reps)) {
+      if (explicit) err.textContent = "Reps must be a whole number.";
+      return;
+    }
+    repsPart = reps;
   }
   committing = true;
   lastWeight = weight; // carry the weight into the next set
 
   // The captured set lives only in the day's Workout Notes, as one appended line.
-  const line = weight !== "" ? `${weight} ${unit} × ${reps}` : `Bodyweight × ${reps}`;
+  const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const set = weight !== "" ? `${weight} ${unit} × ${repsPart}` : `Bodyweight × ${repsPart}`;
+  const line = `${time} · ${set}`;
   const existing = (detail.notes[selDay] || "").replace(/\s+$/, "");
   const updated = existing ? `${existing}\n${line}` : line;
 
@@ -711,6 +748,14 @@ const actions = {
   "toggle-details"() {
     detailsOpen = !detailsOpen;
     drawExercise();
+  },
+  "toggle-split"() {
+    detail.exercise.split = !detail.exercise.split;
+    saveExercise(); // persist the unilateral setting on the exercise
+    drawExercise();
+  },
+  "open-sudoku"() {
+    openSudoku();
   },
 };
 
@@ -914,6 +959,218 @@ app.addEventListener("pointerup", (e) => {
     swipeSuppress = true; // don't let this gesture also select the day it started on
     setTimeout(() => (swipeSuppress = false), 60);
   }
+});
+
+/* ---------- Sudoku brain break ---------- */
+// A 9×9 puzzle kept in localStorage so it survives reloads; cleared and regenerated
+// only when the player solves it. Pure client-side — no server involved.
+const SUDOKU_KEY = "liftcraft.sudoku";
+const SUDOKU_STATS_KEY = "liftcraft.sudokuStats"; // { completed, timeMs } — lifetime totals
+let sudoku = null;
+let sudokuOpenedAt = 0; // timestamp the modal was opened; 0 when closed
+
+function sudokuLoadStats() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SUDOKU_STATS_KEY));
+    if (s && typeof s.completed === "number" && typeof s.timeMs === "number") return s;
+  } catch {}
+  return { completed: 0, timeMs: 0 };
+}
+let sudokuStats = sudokuLoadStats();
+function sudokuSaveStats() { try { localStorage.setItem(SUDOKU_STATS_KEY, JSON.stringify(sudokuStats)); } catch {} }
+
+// Fold the time open so far into the lifetime total, without stopping the clock —
+// safe to call repeatedly (on solve, on close, on page hide).
+function sudokuAccrue() {
+  if (!sudokuOpenedAt) return;
+  const now = Date.now();
+  sudokuStats.timeMs += now - sudokuOpenedAt;
+  sudokuOpenedAt = now;
+  sudokuSaveStats();
+}
+
+function fmtDuration(ms) {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+const sBox = (r, c) => Math.floor(r / 3) * 3 + Math.floor(c / 3);
+
+// Count solutions of a grid (array of 81 ints, 0 = empty), stopping at `limit`.
+function sudokuSolveCount(grid, limit) {
+  const g = grid.slice();
+  const rows = new Array(9).fill(0), cols = new Array(9).fill(0), box = new Array(9).fill(0);
+  for (let i = 0; i < 81; i++) {
+    const v = g[i];
+    if (v) { const r = (i / 9) | 0, c = i % 9, m = 1 << v; rows[r] |= m; cols[c] |= m; box[sBox(r, c)] |= m; }
+  }
+  let count = 0;
+  (function rec(pos) {
+    if (count >= limit) return;
+    while (pos < 81 && g[pos]) pos++;
+    if (pos === 81) { count++; return; }
+    const r = (pos / 9) | 0, c = pos % 9, b = sBox(r, c), used = rows[r] | cols[c] | box[b];
+    for (let v = 1; v <= 9; v++) {
+      const m = 1 << v;
+      if (used & m) continue;
+      g[pos] = v; rows[r] |= m; cols[c] |= m; box[b] |= m;
+      rec(pos + 1);
+      g[pos] = 0; rows[r] &= ~m; cols[c] &= ~m; box[b] &= ~m;
+      if (count >= limit) return;
+    }
+  })(0);
+  return count;
+}
+
+// Fill an empty grid with a random complete, valid solution.
+function sudokuSolution() {
+  const g = new Array(81).fill(0);
+  const rows = new Array(9).fill(0), cols = new Array(9).fill(0), box = new Array(9).fill(0);
+  (function rec(pos) {
+    while (pos < 81 && g[pos]) pos++;
+    if (pos === 81) return true;
+    const r = (pos / 9) | 0, c = pos % 9, b = sBox(r, c), used = rows[r] | cols[c] | box[b];
+    const nums = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+    for (let i = 8; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [nums[i], nums[j]] = [nums[j], nums[i]]; }
+    for (const v of nums) {
+      const m = 1 << v;
+      if (used & m) continue;
+      g[pos] = v; rows[r] |= m; cols[c] |= m; box[b] |= m;
+      if (rec(pos + 1)) return true;
+      g[pos] = 0; rows[r] &= ~m; cols[c] &= ~m; box[b] &= ~m;
+    }
+    return false;
+  })(0);
+  return g;
+}
+
+// Carve a puzzle out of a full solution, keeping the solution unique.
+function sudokuNew() {
+  const solution = sudokuSolution();
+  const puzzle = solution.slice();
+  const order = [...Array(81).keys()];
+  for (let i = 80; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [order[i], order[j]] = [order[j], order[i]]; }
+  let removed = 0;
+  for (const idx of order) {
+    if (removed >= 48) break; // ~33 givens
+    const keep = puzzle[idx];
+    puzzle[idx] = 0;
+    if (sudokuSolveCount(puzzle, 2) !== 1) puzzle[idx] = keep; // not unique → put it back
+    else removed++;
+  }
+  const p = puzzle.join("");
+  return { puzzle: p, solution: solution.join(""), entries: p };
+}
+
+function sudokuSave() { try { localStorage.setItem(SUDOKU_KEY, JSON.stringify(sudoku)); } catch {} }
+
+function sudokuLoad() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SUDOKU_KEY));
+    if (s && s.puzzle?.length === 81 && s.solution?.length === 81 && s.entries?.length === 81) return s;
+  } catch {}
+  return sudokuNew();
+}
+
+function openSudoku() {
+  sudoku = sudokuLoad();
+  sudokuSave();
+  drawSudoku();
+  sudokuOpenedAt = Date.now(); // start timing the session (no visible timer)
+  $("#sudoku").showModal();
+}
+
+function drawSudoku() {
+  const { puzzle, entries } = sudoku;
+  let html = "";
+  for (let i = 0; i < 81; i++) {
+    const r = (i / 9) | 0, c = i % 9;
+    const cls = ["scell"];
+    if (c % 3 === 2 && c !== 8) cls.push("br"); // thick lines between the 3×3 boxes
+    if (r % 3 === 2 && r !== 8) cls.push("bb");
+    if (puzzle[i] !== "0") {
+      html += `<div class="${cls.join(" ")}"><span class="given">${puzzle[i]}</span></div>`;
+    } else {
+      const v = entries[i] === "0" ? "" : entries[i];
+      html += `<div class="${cls.join(" ")}"><input inputmode="numeric" maxlength="1" data-i="${i}" value="${v}" aria-label="Row ${r + 1} column ${c + 1}"></div>`;
+    }
+  }
+  $("#sudoku-grid").innerHTML = html;
+  markSudoku();
+  sudokuStatus();
+}
+
+// Flag any digit that repeats within its row, column, or box.
+function markSudoku() {
+  const grid = $("#sudoku-grid");
+  const cells = grid.querySelectorAll(".scell");
+  cells.forEach((el) => el.classList.remove("bad"));
+  const e = sudoku.entries, bad = new Set();
+  const scan = (idxs) => {
+    const seen = {};
+    for (const idx of idxs) {
+      const d = e[idx];
+      if (d === "0") continue;
+      if (seen[d] !== undefined) { bad.add(idx); bad.add(seen[d]); } else seen[d] = idx;
+    }
+  };
+  for (let r = 0; r < 9; r++) scan([...Array(9)].map((_, c) => r * 9 + c));
+  for (let c = 0; c < 9; c++) scan([...Array(9)].map((_, r) => r * 9 + c));
+  for (let b = 0; b < 9; b++) {
+    const r0 = Math.floor(b / 3) * 3, c0 = (b % 3) * 3, idxs = [];
+    for (let dr = 0; dr < 3; dr++) for (let dc = 0; dc < 3; dc++) idxs.push((r0 + dr) * 9 + (c0 + dc));
+    scan(idxs);
+  }
+  bad.forEach((idx) => cells[idx]?.classList.add("bad"));
+}
+
+function sudokuStatus(msg) {
+  const el = $("#sudoku-status");
+  if (!el) return;
+  if (msg) { el.textContent = msg; return; }
+  const left = [...sudoku.entries].filter((d) => d === "0").length;
+  el.textContent = left ? `${left} square${left === 1 ? "" : "s"} left` : "Checking…";
+}
+
+function onSudokuInput(e) {
+  const inp = e.target.closest("input[data-i]");
+  if (!inp) return;
+  inp.value = inp.value.replace(/[^1-9]/g, "").slice(-1); // last typed digit, 1–9 only
+  const i = Number(inp.dataset.i);
+  const entries = sudoku.entries.split("");
+  entries[i] = inp.value === "" ? "0" : inp.value;
+  sudoku.entries = entries.join("");
+  sudokuSave();
+  markSudoku();
+  if (sudoku.entries === sudoku.solution) sudokuSolved();
+  else sudokuStatus();
+}
+
+function sudokuSolved() {
+  sudokuStats.completed += 1;
+  sudokuSaveStats();
+  sudokuAccrue(); // bank the time up to the solve
+  sudokuStatus("Solved! 🎉 Fresh puzzle coming up…");
+  $("#sudoku-grid").querySelectorAll("input").forEach((el) => (el.disabled = true));
+  setTimeout(() => {
+    sudoku = sudokuNew();
+    sudokuSave();
+    drawSudoku();
+    sudokuStatus("New puzzle ready.");
+  }, 1000);
+}
+
+$("#sudoku-grid").addEventListener("input", onSudokuInput);
+$("#sudoku").addEventListener("close", () => { sudokuAccrue(); sudokuOpenedAt = 0; });
+$("#sudoku-close").addEventListener("click", () => $("#sudoku").close());
+$("#sudoku-new").addEventListener("click", () => {
+  if (!confirm("Start a new puzzle? Your current progress will be lost.")) return;
+  sudoku = sudokuNew();
+  sudokuSave();
+  drawSudoku();
 });
 
 /* ---------- boot ---------- */

@@ -79,6 +79,16 @@
     <div class="color-grid" id="color-grid"></div>
     <button value="cancel" type="button" id="colors-cancel" class="ghost">Cancel</button>
   </form></dialog>
+
+  <dialog id="sudoku">
+    <div class="sudoku-head">
+      <h3>Brain Break</h3>
+      <button type="button" id="sudoku-close" class="icon-btn" aria-label="Close">✕</button>
+    </div>
+    <p id="sudoku-status" class="sudoku-status muted"></p>
+    <div id="sudoku-grid" class="sudoku-grid"></div>
+    <div class="sudoku-actions"><button type="button" id="sudoku-new" class="ghost">New puzzle</button></div>
+  </dialog>
   <script src="/app.js"></script>
 </body>
 </html>

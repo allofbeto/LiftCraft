@@ -295,9 +295,10 @@ async function handleData(request, env, url, user) {
     }
     if (method === "GET" && id && !sub) {
       const x = await env.DB.prepare(
-        "SELECT id, name, folder_id AS folderId, equipment, muscle FROM exercises WHERE id = ? AND user_id = ?",
+        "SELECT id, name, folder_id AS folderId, equipment, muscle, split FROM exercises WHERE id = ? AND user_id = ?",
       ).bind(id, user.id).first();
       if (!x) return json({ error: "Not found." }, 404);
+      x.split = x.split === 1; // expose as a boolean
       const [e, n] = await Promise.all([
         env.DB.prepare("SELECT * FROM entries WHERE exercise_id = ? ORDER BY logged_at DESC, id DESC").bind(id).all(),
         env.DB.prepare("SELECT day, note FROM day_notes WHERE exercise_id = ?").bind(id).all(),
@@ -311,8 +312,8 @@ async function handleData(request, env, url, user) {
       const folderId = await ownedFolder(env, user.id, body.folderId ?? null);
       if (folderId === undefined) return json({ error: "Folder not found." }, 404);
       await env.DB.prepare(
-        "UPDATE exercises SET name = ?, folder_id = ?, equipment = ?, muscle = ? WHERE id = ? AND user_id = ?",
-      ).bind(name, folderId, cleanName(body.equipment), cleanName(body.muscle), id, user.id).run();
+        "UPDATE exercises SET name = ?, folder_id = ?, equipment = ?, muscle = ?, split = ? WHERE id = ? AND user_id = ?",
+      ).bind(name, folderId, cleanName(body.equipment), cleanName(body.muscle), body.split ? 1 : 0, id, user.id).run();
       return json({ ok: true });
     }
     if (method === "DELETE" && id && !sub) {
