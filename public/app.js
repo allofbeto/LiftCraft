@@ -1608,7 +1608,7 @@ function drawFoodSearch(q = "", message = "") {
       </div>
     </form>
     <div id="food-results" class="food-results">${foodResultsHtml(message)}</div>
-    <button type="button" class="ghost food-scan" data-food="camera">Scan a nutrition label</button>
+    <button type="button" class="ghost food-scan" data-food="camera">Scan a product</button>
     <button type="button" class="link food-manual" data-food="manual">Enter manually (only you will see it)</button>`;
 }
 
@@ -1773,7 +1773,7 @@ function drawFoodPreview() {
   note.textContent = f.densityKnown ? `Converted at ${f.gPerMl} g per ml.` : "Counted as 1 g per ml, so this is approximate for anything not water-like.";
 }
 
-/* label scanning: photo, then review what was read, then save and log */
+/* product scanning: the front of the package for its name, then the nutrition label, then review, save and log */
 
 const SCAN_MAX_EDGE = 1568; // larger photos only add cost, not legibility
 
@@ -1789,6 +1789,8 @@ function encodeLabelPhoto(source, width, height) {
 
 let foodStream = null;
 let foodCameraToken = 0; // bumped whenever the camera or a pending scan stops being wanted
+let foodScanStep = "front"; // which side of the package the camera is for: "front" or "label"
+let foodScanProduct = null; // the name and brand from step one, read or typed
 
 function stopFoodCamera() {
   foodCameraToken++;
@@ -1796,18 +1798,36 @@ function stopFoodCamera() {
   foodStream = null;
 }
 
+const SCAN_STEPS = {
+  front: { title: "Step 1 of 2: Front of package", hint: "Fill the frame with the front of the package, so we can read the name.", reading: "Reading package…" },
+  label: { title: "Step 2 of 2: Nutrition label", hint: "Fill the frame with the nutrition panel.", reading: "Reading label…" },
+};
+
+// A new scan starts at the front of the package, with nothing carried over from the last one.
+function startProductScan() {
+  foodScanProduct = null;
+  openFoodCamera("", "front");
+}
+
 // Live camera view. Without camera access, this falls back to the device's photo picker.
-async function openFoodCamera(message = "") {
+async function openFoodCamera(message = "", step = foodScanStep) {
   stopFoodCamera();
+  foodScanStep = step;
   const token = foodCameraToken;
-  $("#food-title").textContent = "Scan label";
+  const hint = SCAN_STEPS[step].hint;
+  const got = foodScanProduct && step === "label"
+    ? `<p class="food-scan-got"><span>${esc([foodScanProduct.name, foodScanProduct.brand].filter(Boolean).join(" · "))}</span> <button type="button" class="link" data-food="scan-name">Change</button></p>`
+    : "";
+  $("#food-title").textContent = SCAN_STEPS[step].title;
   $("#food-body").innerHTML = `
+    ${got}
     <video id="food-video" class="food-video" autoplay playsinline muted hidden></video>
     <p id="food-camera-msg" class="muted food-msg">${esc(message || "Opening camera…")}</p>
     <button type="button" id="food-shutter" class="primary food-shutter" data-food="shutter" hidden>Take photo</button>
     <label id="food-pick" class="ghost food-scan" hidden>Choose a photo<input id="food-photo" type="file" accept="image/*" capture="environment" hidden></label>
+    ${step === "front" ? `<button type="button" class="ghost food-scan" data-food="scan-name">Type the name instead</button>` : ""}
     <p class="food-note muted food-center">The photo goes to Anthropic to be read, and TorchRep doesn't keep it.</p>
-    <div class="dlg-actions food-camera-back"><button type="button" data-food="back">Back</button></div>`;
+    <div class="dlg-actions food-camera-back"><button type="button" data-food="${step === "front" ? "back" : "scan-front"}">Back</button></div>`;
   const fallback = (text) => {
     $("#food-camera-msg").textContent = message || text;
     $("#food-pick").hidden = false;
@@ -1833,7 +1853,7 @@ async function openFoodCamera(message = "") {
   video.hidden = false;
   await video.play().catch(() => {});
   if (token !== foodCameraToken) return;
-  $("#food-camera-msg").textContent = message || "Fill the frame with the nutrition panel.";
+  $("#food-camera-msg").textContent = message || hint;
   $("#food-shutter").hidden = false;
   $("#food-photo").removeAttribute("capture"); // the live camera is up, so this button means the photo library
   $("#food-pick").hidden = false;
@@ -1860,13 +1880,38 @@ async function pickLabelPhoto(file) {
 async function sendLabelPhoto(image) {
   stopFoodCamera();
   const token = foodCameraToken;
-  $("#food-body").innerHTML = `<div class="food-reading"><img src="/brand/mascot.png" width="253" height="224" alt=""><p class="muted food-msg">Reading label…</p></div>`;
+  const step = foodScanStep;
+  $("#food-body").innerHTML = `<div class="food-reading"><img src="/brand/mascot.png" width="253" height="224" alt=""><p class="muted food-msg">${SCAN_STEPS[step].reading}</p></div>`;
   try {
+    if (step === "front") {
+      const { name, brand } = await api("food/scan/front", { body: { image, mediaType: "image/jpeg" } });
+      if (token !== foodCameraToken) return;
+      foodScanProduct = { name, brand };
+      return openFoodCamera("", "label");
+    }
     const { scanId, reading } = await api("food/scan", { body: { image, mediaType: "image/jpeg" } });
     if (token === foodCameraToken) drawFoodScanReview(scanId, reading);
   } catch (ex) {
-    if (token === foodCameraToken) openFoodCamera(ex.message);
+    if (token === foodCameraToken) openFoodCamera(ex.message, step);
   }
+}
+
+// Step one without a photo, or a chance to correct what was read.
+function drawFoodScanName() {
+  stopFoodCamera();
+  const p = foodScanProduct || {};
+  $("#food-title").textContent = "Step 1 of 2: Product name";
+  $("#food-body").innerHTML = `
+    <form id="food-scan-name" class="food-form">
+      <label>Item name <input id="scan-front-name" maxlength="80" autocomplete="off" required placeholder="Exactly as on the package" value="${esc(p.name ?? "")}"></label>
+      <label>Brand (optional) <input id="scan-front-brand" maxlength="80" autocomplete="off" value="${esc(p.brand ?? "")}"></label>
+      <p class="error" role="alert"></p>
+      <div class="dlg-actions">
+        <button type="button" data-food="scan-front">Back</button>
+        <button class="primary" type="submit">Next: scan label</button>
+      </div>
+    </form>`;
+  $("#scan-front-name").focus();
 }
 
 const customFoodFields = (v, note) => {
@@ -1893,11 +1938,11 @@ function drawFoodScanReview(scanId, r) {
   $("#food-body").innerHTML = `
     <form id="food-scan-review" class="food-form" data-scan="${esc(scanId)}">
       ${customFoodFields(
-        { back: "back", label: r.serving_label, grams: r.serving_grams, kcal: r.calories, protein: r.protein_g, carbs: r.carbs_g, fat: r.fat_g },
-        "Check these against the label. This food becomes public once 3 people scan the same label and enter the same name. If you change a number, it stays private to you.",
+        { back: "scan-label", name: foodScanProduct?.name, brand: foodScanProduct?.brand, label: r.serving_label, grams: r.serving_grams, kcal: r.calories, protein: r.protein_g, carbs: r.carbs_g, fat: r.fat_g },
+        "Check these against the package. This food becomes public once 3 people scan the same label and enter the same name. If you change a number, it stays private to you.",
       )}
     </form>`;
-  $("#scan-name").focus();
+  if (!foodScanProduct?.name) $("#scan-name").focus();
 }
 
 function drawCustomFoodEdit(food) {
@@ -2104,7 +2149,10 @@ $("#food-body").addEventListener("click", (e) => {
   }
   else if (act === "body-delete") deleteBodyLog().catch((ex) => toast(ex.message, { error: true }));
   else if (act === "manual") drawFoodManual();
-  else if (act === "camera") openFoodCamera();
+  else if (act === "camera") startProductScan();
+  else if (act === "scan-name") drawFoodScanName();
+  else if (act === "scan-front") openFoodCamera("", "front");
+  else if (act === "scan-label") openFoodCamera("", "label");
   else if (act === "shutter") takeLabelPhoto();
   else if (act === "report") {
     btn.disabled = true;
@@ -2148,6 +2196,10 @@ $("#food-body").addEventListener("submit", (e) => {
   const form = e.target;
   if (form.id === "food-search") return runFoodSearch();
   if (!form.reportValidity()) return;
+  if (form.id === "food-scan-name") {
+    foodScanProduct = { name: $("#scan-front-name").value.trim(), brand: $("#scan-front-brand").value.trim() };
+    return foodScanProduct.name ? openFoodCamera("", "label") : (form.querySelector(".error").textContent = "Enter the item's name.");
+  }
   if (form.id === "food-body-log") return saveBodyLog(form);
   if (form.id === "food-body-goals") return saveGoals(form, { weight: $("#goal-weight").value, weightUnit: $("#goal-unit").value, bodyFat: $("#goal-fat").value });
   if (form.id === "food-macro-goals") return saveGoals(form, { kcal: $("#goal-kcal").value, protein: $("#goal-protein").value, carbs: $("#goal-carbs").value, fat: $("#goal-macro-fat").value });

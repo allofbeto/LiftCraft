@@ -379,6 +379,9 @@ dialog h3 { margin:0 0 12px; }
 .food-center { text-align:center; margin-top:6px; }
 .food-video { display:block; width:100%; max-height:50vh; object-fit:cover; background:#000; border-radius:12px; margin-bottom:10px; }
 .food-shutter { display:block; width:100%; }
+.food-scan-got { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 10px; font-weight:600; }
+.food-scan-got span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.food-scan-got .link { flex:none; min-height:0; padding:4px 0; font-size:14px; }
 .food-camera-back { grid-template-columns:1fr; margin-top:12px; }
 .food-report { padding:0; min-height:0; font-size:12px; }
 .food-preview { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px; background:var(--bg); border-radius:10px; padding:12px; }
