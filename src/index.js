@@ -736,11 +736,10 @@ function validDay(day) {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === day;
 }
 
-function parseMealItem(body) {
+// What logged foods and recipe ingredients have in common.
+function parseFoodFields(body) {
   const name = cleanName(body.name);
   if (!name) return { error: "Name is required." };
-  if (!validDay(body.day)) return { error: "Enter a valid day." };
-  if (!MEALS.includes(body.meal)) return { error: "Choose a meal." };
   const amount = (v) => {
     if (v === "" || v == null) return null;
     const n = Number(v);
@@ -750,13 +749,54 @@ function parseMealItem(body) {
   if (kcal == null) return { error: "Enter the calories." };
   if ([grams, protein, carbs, fat].includes(undefined)) return { error: "Enter valid amounts." };
   const code = /^\d{1,32}$/.test(String(body.code ?? "")) ? String(body.code) : "";
-  const source = ["off", "usda", "custom"].includes(body.source) ? body.source : "";
+  const source = ["off", "usda", "custom", "recipe"].includes(body.source) ? body.source : "";
   const rawQty = amount(body.qty === "" || body.qty == null ? null : Number(body.qty) * 10); // keep 2 decimals, for "0.25 cup"
   if (rawQty === undefined) return { error: "Enter valid amounts." };
   const qty = rawQty === null ? null : rawQty / 10;
   const unit = qty === null ? "" : String(body.unit ?? "").trim().slice(0, 40);
-  return { day: body.day, meal: body.meal, name, brand: cleanName(body.brand), code, source, qty, unit, grams, kcal, protein, carbs, fat };
+  return { name, brand: cleanName(body.brand), code, source, qty, unit, grams, kcal, protein, carbs, fat };
 }
+
+function parseMealItem(body) {
+  if (!validDay(body.day)) return { error: "Enter a valid day." };
+  if (!MEALS.includes(body.meal)) return { error: "Choose a meal." };
+  const v = parseFoodFields(body);
+  return v.error ? v : { ...v, day: body.day, meal: body.meal };
+}
+
+const MAX_RECIPE_INGREDIENTS = 100;
+
+function parseRecipe(body) {
+  const name = cleanName(body.name);
+  if (!name) return { error: "Give the recipe a name." };
+  const servings = Math.round(Number(body.servings) * 100) / 100;
+  if (!(servings >= 0.1 && servings <= 1000)) return { error: "Enter how many servings it makes." };
+  if (!Array.isArray(body.ingredients) || !body.ingredients.length) return { error: "Add at least one ingredient." };
+  if (body.ingredients.length > MAX_RECIPE_INGREDIENTS) return { error: `A recipe can have up to ${MAX_RECIPE_INGREDIENTS} ingredients.` };
+  const ingredients = body.ingredients.map(parseFoodFields);
+  const bad = ingredients.find((i) => i.error);
+  return bad ? { error: bad.error } : { name, servings, ingredients };
+}
+
+const insertIngredients = (env, recipeId, ingredients) =>
+  ingredients.map((v, i) =>
+    env.DB.prepare(
+      "INSERT INTO recipe_ingredients (recipe_id, position, name, brand, source, code, qty, unit, grams, kcal, protein, carbs, fat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(recipeId, i, v.name, v.brand, v.source, v.code, v.qty, v.unit, v.grams, v.kcal, v.protein, v.carbs, v.fat),
+  );
+
+// A blank goal is no goal; undefined means the value is invalid.
+function parseGoal(v, max) {
+  if (v === "" || v == null) return null;
+  const n = Math.round(Number(v) * 10) / 10;
+  return n > 0 && n <= max ? n : undefined;
+}
+
+const GOAL_COLUMNS = "kcal, protein, carbs, fat, weight, weight_unit AS weightUnit, body_fat AS bodyFat, sex, birth_year AS birthYear, height_cm AS heightCm, activity, plan, pace";
+const pick = (v, allowed) => (allowed.includes(v) ? v : "");
+
+const bodyLogRows = async (env, user) =>
+  (await env.DB.prepare("SELECT day, weight, unit, body_fat AS bodyFat FROM body_logs WHERE user_id = ? ORDER BY day DESC").bind(user.id).all()).results;
 
 async function handleData(request, env, url, user) {
   const [, resource, rawId, sub, arg] = url.pathname.split("/").filter(Boolean); // api/<resource>/<id>/<sub>
@@ -788,6 +828,128 @@ async function handleData(request, env, url, user) {
       env.DB.prepare("SELECT COUNT(*) AS c FROM exercises WHERE user_id = ?").bind(user.id).first(),
     ]);
     return json({ days: days.results.map((r) => r.day), exerciseCount: ex.c });
+  }
+
+  if (resource === "nutrition" && method === "GET") {
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
+    if (!validDay(from) || !validDay(to) || from > to) return json({ error: "Enter a valid date range." }, 400);
+    const [meals, foods] = await Promise.all([
+      env.DB.prepare(
+        `SELECT day, meal, SUM(kcal) AS kcal, SUM(protein) AS protein, SUM(carbs) AS carbs, SUM(fat) AS fat
+         FROM meal_items WHERE user_id = ? AND day BETWEEN ? AND ? GROUP BY day, meal`,
+      ).bind(user.id, from, to).all(),
+      env.DB.prepare(
+        `SELECT name, COUNT(*) AS times, SUM(kcal) AS kcal
+         FROM meal_items WHERE user_id = ? AND day BETWEEN ? AND ?
+         GROUP BY name COLLATE NOCASE ORDER BY kcal DESC LIMIT 5`,
+      ).bind(user.id, from, to).all(),
+    ]);
+    return json({ meals: meals.results, foods: foods.results });
+  }
+
+  if (resource === "goals") {
+    if (method === "GET") {
+      const row = await env.DB.prepare(`SELECT ${GOAL_COLUMNS} FROM user_goals WHERE user_id = ?`).bind(user.id).first();
+      return json({ goals: row || { kcal: null, protein: null, carbs: null, fat: null, weight: null, weightUnit: "lb", bodyFat: null, sex: "", birthYear: null, heightCm: null, activity: "", plan: "", pace: "" } });
+    }
+    if (method === "PUT") {
+      const v = [parseGoal(body.kcal, 20000), parseGoal(body.protein, 2000), parseGoal(body.carbs, 2000), parseGoal(body.fat, 2000), parseGoal(body.weight, 1500), parseGoal(body.bodyFat, 80)];
+      if (v.includes(undefined)) return json({ error: "Enter goals as positive numbers." }, 400);
+      const [kcal, protein, carbs, fat, weight, bodyFat] = v;
+      const weightUnit = UNITS.includes(body.weightUnit) ? body.weightUnit : "lb";
+      const birthYear = body.birthYear == null || body.birthYear === "" ? null : Number(body.birthYear);
+      if (birthYear !== null && !(Number.isInteger(birthYear) && birthYear >= 1900 && birthYear <= new Date().getFullYear())) return json({ error: "Enter a valid age." }, 400);
+      const heightCm = parseGoal(body.heightCm, 280);
+      if (heightCm === undefined) return json({ error: "Enter a valid height." }, 400);
+      const profile = {
+        sex: pick(body.sex, ["male", "female"]),
+        birthYear,
+        heightCm,
+        activity: pick(body.activity, ["sedentary", "light", "moderate", "active", "extreme"]),
+        plan: pick(body.plan, ["lose", "tone", "gain", "strength", "maintain"]),
+        pace: pick(body.pace, ["gentle", "steady", "fast"]),
+      };
+      await env.DB.prepare(
+        `INSERT INTO user_goals (user_id, kcal, protein, carbs, fat, weight, weight_unit, body_fat, sex, birth_year, height_cm, activity, plan, pace) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_id) DO UPDATE SET kcal = excluded.kcal, protein = excluded.protein, carbs = excluded.carbs, fat = excluded.fat,
+           weight = excluded.weight, weight_unit = excluded.weight_unit, body_fat = excluded.body_fat, sex = excluded.sex, birth_year = excluded.birth_year,
+           height_cm = excluded.height_cm, activity = excluded.activity, plan = excluded.plan, pace = excluded.pace`,
+      ).bind(user.id, kcal, protein, carbs, fat, weight, weightUnit, bodyFat, profile.sex, profile.birthYear, profile.heightCm, profile.activity, profile.plan, profile.pace).run();
+      return json({ goals: { kcal, protein, carbs, fat, weight, weightUnit, bodyFat, ...profile } });
+    }
+  }
+
+  if (resource === "body") {
+    if (method === "GET") return json({ logs: await bodyLogRows(env, user) });
+    if (method === "POST") {
+      if (!validDay(body.day)) return json({ error: "Enter a valid date." }, 400);
+      const weight = parseGoal(body.weight, 1500);
+      const bodyFat = parseGoal(body.bodyFat, 80);
+      if (weight === undefined) return json({ error: "Enter a valid weight." }, 400);
+      if (bodyFat === undefined) return json({ error: "Enter body fat as a percentage up to 80." }, 400);
+      const unit = UNITS.includes(body.unit) ? body.unit : "lb";
+      // One entry per day. Clearing both values removes that day's entry.
+      if (weight === null && bodyFat === null) {
+        await env.DB.prepare("DELETE FROM body_logs WHERE user_id = ? AND day = ?").bind(user.id, body.day).run();
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO body_logs (user_id, day, weight, unit, body_fat) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (user_id, day) DO UPDATE SET weight = excluded.weight, unit = excluded.unit, body_fat = excluded.body_fat`,
+        ).bind(user.id, body.day, weight, unit, bodyFat).run();
+      }
+      return json({ logs: await bodyLogRows(env, user) });
+    }
+  }
+
+  if (resource === "recipes") {
+    if (method === "GET" && !id) {
+      // grams is only known when every ingredient has a weight.
+      const r = await env.DB.prepare(
+        `SELECT r.id, r.name, r.servings, COUNT(i.id) AS ingredientCount, SUM(i.kcal) AS kcal, SUM(i.protein) AS protein, SUM(i.carbs) AS carbs, SUM(i.fat) AS fat,
+                CASE WHEN COUNT(i.grams) = COUNT(i.id) THEN SUM(i.grams) END AS grams
+         FROM recipes r LEFT JOIN recipe_ingredients i ON i.recipe_id = r.id
+         WHERE r.user_id = ? GROUP BY r.id ORDER BY r.name COLLATE NOCASE`,
+      ).bind(user.id).all();
+      return json({ recipes: r.results });
+    }
+    if (method === "POST" && !id) {
+      const v = parseRecipe(body);
+      if (v.error) return json({ error: v.error }, 400);
+      const r = await env.DB.prepare("INSERT INTO recipes (user_id, name, servings) VALUES (?, ?, ?)").bind(user.id, v.name, v.servings).run();
+      const recipeId = r.meta.last_row_id;
+      try {
+        await env.DB.batch(insertIngredients(env, recipeId, v.ingredients));
+      } catch (e) {
+        await env.DB.prepare("DELETE FROM recipes WHERE id = ?").bind(recipeId).run(); // never leave a recipe with nothing in it
+        throw e;
+      }
+      return json({ id: recipeId }, 201);
+    }
+    if (id) {
+      const owned = await env.DB.prepare("SELECT id, name, servings FROM recipes WHERE id = ? AND user_id = ?").bind(id, user.id).first();
+      if (!owned) return json({ error: "Not found." }, 404);
+      if (method === "GET") {
+        const i = await env.DB.prepare(
+          "SELECT name, brand, source, code, qty, unit, grams, kcal, protein, carbs, fat FROM recipe_ingredients WHERE recipe_id = ? ORDER BY position",
+        ).bind(id).all();
+        return json({ recipe: { ...owned, ingredients: i.results } });
+      }
+      if (method === "PUT") {
+        const v = parseRecipe(body);
+        if (v.error) return json({ error: v.error }, 400);
+        await env.DB.batch([
+          env.DB.prepare("UPDATE recipes SET name = ?, servings = ? WHERE id = ?").bind(v.name, v.servings, id),
+          env.DB.prepare("DELETE FROM recipe_ingredients WHERE recipe_id = ?").bind(id),
+          ...insertIngredients(env, id, v.ingredients),
+        ]);
+        return json({ ok: true });
+      }
+      if (method === "DELETE") {
+        await env.DB.prepare("DELETE FROM recipes WHERE id = ?").bind(id).run();
+        return json({ ok: true });
+      }
+    }
   }
 
   if (resource === "meals") {
@@ -1007,7 +1169,7 @@ export default {
         if (!user) return json({ error: "Not signed in." }, 401);
         return await handleFood(request, url, env, user);
       }
-      if (/^\/api\/(library|progress|meals|reorder|color|move|folders|exercises|entries)(\/|$)/.test(url.pathname)) {
+      if (/^\/api\/(library|progress|nutrition|goals|body|recipes|meals|reorder|color|move|folders|exercises|entries)(\/|$)/.test(url.pathname)) {
         const user = await currentUser(request, env);
         if (!user) return json({ error: "Not signed in." }, 401);
         return await handleData(request, env, url, user);

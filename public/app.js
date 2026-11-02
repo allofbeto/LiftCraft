@@ -63,6 +63,10 @@ function signedOut() {
   user = null;
   current = null;
   mealCache.clear();
+  resetGoals();
+  resetRecipes();
+  resetBody();
+  resetPlan();
   $("body > .card").hidden = false;
   $("#app").hidden = true;
   $("#tabbar").hidden = true;
@@ -130,6 +134,7 @@ function addContext() {
 
 // The bottom-bar "Add" button: choose a type, then create it in context.
 async function addFlow() {
+  if (current?.view === "meals" && current.recipes && !current.recipe) return (location.hash = "#/meals/recipes/new");
   if (current?.view === "meals") return openFood();
   const type = await askAddType(addContext().label);
   if (type === "folder") await actions["new-folder"]();
@@ -210,7 +215,8 @@ const exerciseItem = (x) => `
     <button class="item-main" data-go="#/exercise/${x.id}">
       ${swatch("exercise", x.color)}<span class="name">${esc(x.name)}</span>
       <span class="meta">${touched(x.lastDay)}</span>
-    </button>${grip}
+    </button>
+    <button class="stats-link" data-go="#/exercise/${x.id}/stats" aria-label="Stats for ${esc(x.name)}" title="Stats">${CHART_ICON}</button>${grip}
   </div>`;
 
 // The most recent activity across a folder's whole subtree (its exercises and any nested folders').
@@ -341,6 +347,7 @@ async function renderProfile() {
       <div class="prof-row"><span class="k">Email</span><span class="v">${esc(user.email)}</span></div>
       <div class="prof-row"><span class="k">Folders</span><span class="v">${folders.length}</span></div>
     </div>
+    <div id="profile-body"><h2 class="section">Body</h2><div class="stats">${`<span class="skel skel-stat"></span>`.repeat(2)}</div></div>
     <h2 class="section">Appearance</h2>
     <div class="tabs theme-picker" role="radiogroup" aria-label="Appearance">
       ${["auto", "light", "dark"]
@@ -352,13 +359,15 @@ async function renderProfile() {
       <button class="ghost" data-act="logout">Log out</button>
     </div>
     <p class="food-credit muted">Food data from <a href="https://fdc.nal.usda.gov" target="_blank" rel="noopener">USDA FoodData Central</a> and <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>.</p>`;
-  const html = await progressHtml();
+  const [html] = await Promise.all([progressHtml(), loadBody()]);
   if (current?.view !== "profile" || !$("#profile-progress")) return; // navigated away while loading
   $("#profile-progress").innerHTML = html;
   animateIn($("#profile-progress"));
 }
 
 async function renderExercise(id) {
+  // Moving between an exercise's log and its stats keeps the day being viewed.
+  if (keepExercise && detail?.exercise?.id === id) return current.stats ? drawExerciseStats() : drawExercise();
   app.innerHTML = topbar("", { back: "#/" }) + `<span class="skel skel-panel"></span>`.repeat(3);
   const started = performance.now();
   try {
@@ -373,7 +382,8 @@ async function renderExercise(id) {
   detailsOpen = false;
   unit = "lb";
   lastWeight = "";
-  drawExercise();
+  if (current.stats) drawExerciseStats();
+  else drawExercise();
   if (performance.now() - started > 200) animateIn(app); // it replaced visible placeholders
 }
 
@@ -430,6 +440,7 @@ const SAVE_ICON = `<svg viewBox="0 0 24 24" width="24" height="24" fill="none" s
 // Split-pane glyph: one box divided down the middle, for logging left/right reps.
 const SPLIT_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`;
 // Brain glyph: two hemispheres, for the Sudoku brain break.
+const CHART_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M21 20H3"/></svg>`;
 const BRAIN_ICON = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5a2.5 2.5 0 0 0-5 0 2.5 2.5 0 0 0-2 4 2.5 2.5 0 0 0 .5 4.5A2.5 2.5 0 0 0 7 18a2.5 2.5 0 0 0 5 0z"/><path d="M12 5a2.5 2.5 0 0 1 5 0 2.5 2.5 0 0 1 2 4 2.5 2.5 0 0 1-.5 4.5A2.5 2.5 0 0 1 17 18a2.5 2.5 0 0 1-5 0z"/></svg>`;
 
 function drawExercise() {
@@ -444,7 +455,8 @@ function drawExercise() {
   app.innerHTML = `
     ${topbar("", {
       back,
-      right: `<button class="icon-btn" data-act="open-sudoku" aria-label="Brain break" title="Brain break">${BRAIN_ICON}</button>
+      right: `<button class="icon-btn" data-go="#/exercise/${x.id}/stats" aria-label="Stats" title="Stats">${CHART_ICON}</button>
+              <button class="icon-btn" data-act="open-sudoku" aria-label="Brain break" title="Brain break">${BRAIN_ICON}</button>
               <button class="icon-btn${x.split ? " on" : ""}" data-act="toggle-split" aria-pressed="${x.split ? "true" : "false"}" aria-label="${x.split ? "Stop logging left and right separately" : "Split into left and right"}" title="Left / right split">${SPLIT_ICON}</button>
               <button class="icon-btn" data-act="toggle-details" aria-label="Edit details">✏️</button>
               <button class="icon-btn danger" data-act="delete-exercise" aria-label="Delete exercise">🗑</button>`,
@@ -534,9 +546,10 @@ const TAB_ORDER = { home: 0, meals: 1, profile: 2 };
 // Which way a move between screens should slide: deeper or rightward goes forward.
 function navDirection(from, to) {
   if (!from) return "fade";
-  const place = ({ view, id }) => {
-    if (view === "meals" || view === "profile") return [TAB_ORDER[view], 0];
-    if (view === "exercise") return [0, 100];
+  const place = ({ view, id, stats, recipes, recipe }) => {
+    if (view === "meals" || view === "profile") return [TAB_ORDER[view], recipe ? 3 : recipes ? 2 : stats ? 1 : 0];
+    if (view === "plan") return [TAB_ORDER.profile, 10 + (id || 0)];
+    if (view === "exercise") return [0, stats ? 101 : 100];
     if (view === "folder") {
       let depth = 1;
       for (let f = folders.find((x) => x.id === id); f?.parentId != null; f = folders.find((x) => x.id === f.parentId)) depth++;
@@ -551,10 +564,17 @@ function navDirection(from, to) {
   return "fade";
 }
 
+let keepExercise = false;
+
 function renderView({ view, id }) {
   if (view === "folder") return renderFolder(id);
   if (view === "exercise") return renderExercise(id);
-  if (view === "meals") return renderMeals();
+  if (view === "plan") return renderPlan(id);
+  if (view === "meals") {
+    if (current.recipe) return renderRecipeEditor(current.recipe);
+    if (current.recipes) return renderRecipes();
+    return current.stats ? renderMealStats() : renderMeals();
+  }
   if (view === "profile") return renderProfile();
   return renderHome();
 }
@@ -563,13 +583,16 @@ function route() {
   if (!user) return;
   flushNote();
   flushExercise();
-  const [, view, rawId] = location.hash.split("/");
+  const [, view, rawId, sub] = location.hash.split("/");
   if (view === "progress") return location.replace("#/profile"); // Progress now lives on Profile
   const id = Number(rawId);
   const from = current;
-  current = { view, id };
+  const recipes = view === "meals" && rawId === "recipes";
+  current = { view, id, stats: rawId === "stats" || sub === "stats", recipes, recipe: recipes ? sub || null : null };
+  keepExercise = from?.view === "exercise" && view === "exercise" && from.id === id;
   const to = current;
   setActiveTab(view);
+  $("#tabbar").hidden = view === "plan"; // the planner has the whole screen
   const paint = () => {
     const rendered = renderView(to);
     window.scrollTo(0, 0);
@@ -645,6 +668,7 @@ window.addEventListener("pagehide", () => {
 app.addEventListener("input", (e) => {
   const f = e.target.dataset.f;
   if (f === "note") return onNote(e.target.value);
+  if (f === "recipe-name" || f === "recipe-servings") return onRecipeField(f, e.target.value);
   if (!["exname", "equipment", "muscle"].includes(f)) return;
   const x = detail.exercise;
   x[f === "exname" ? "name" : f] = e.target.value;
@@ -851,6 +875,12 @@ const actions = {
   },
   "open-sudoku"() {
     openSudoku();
+  },
+  "meal-range"(d) {
+    return setMealStatsRange(Number(d.days));
+  },
+  "exercise-range"(d) {
+    setExerciseStatsRange(Number(d.days));
   },
 };
 
@@ -1334,13 +1364,30 @@ function setMealItems(items, day = mealDay) {
 const skeletons = (cls, n) => `<span class="skel ${cls}"></span>`.repeat(n);
 const emptyHero = (text) => `<div class="empty-hero"><img src="/brand/mascot.png" width="253" height="224" alt=""><p>${esc(text)}</p></div>`;
 
+const mealLogShown = () => current?.view === "meals" && !current.stats && !current.recipes;
+
+const mealTabs = (on) => `
+  <div class="tabs" role="tablist">
+    <button role="tab" data-go="#/meals" aria-selected="${on === "log"}" class="${on === "log" ? "active" : ""}">Log</button>
+    <button role="tab" data-go="#/meals/stats" aria-selected="${on === "stats"}" class="${on === "stats" ? "active" : ""}">Stats</button>
+    <button role="tab" data-go="#/meals/recipes" aria-selected="${on === "recipes"}" class="${on === "recipes" ? "active" : ""}">Recipes</button>
+  </div>`;
+
+// Each macro's share of the calories it supplies, at 4 kcal per gram of protein or carbs and 9 of fat.
+function macroShares({ protein, carbs, fat }) {
+  const kcal = { protein: protein * 4, carbs: carbs * 4, fat: fat * 9 };
+  const total = kcal.protein + kcal.carbs + kcal.fat;
+  return Object.fromEntries(Object.entries(kcal).map(([k, v]) => [k, total ? (v / total) * 100 : 0]));
+}
+
 // The header and totals stay on screen while only the list below them changes.
 function ensureMealShell() {
   if ($("#meal-sections")) return;
   mealTotalsShown = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-  const macro = (k, label) => `<div class="macro"><div class="n" id="total-${k}">0g</div><div class="l">${label}</div></div>`;
+  const macro = (k, label, color) => `<div class="macro"><div class="n" id="total-${k}">0g</div><div class="l"><i class="key" style="background:var(${color})"></i>${label}</div></div>`;
   app.innerHTML = `
     ${topbar("Meals")}
+    ${mealTabs("log")}
     <div class="cal-head meal-day">
       <button class="icon-btn" data-act="meal-day" data-d="-1" aria-label="Previous day">‹</button>
       <strong id="meal-day-label"></strong>
@@ -1348,7 +1395,9 @@ function ensureMealShell() {
     </div>
     <div class="meal-total">
       <div class="kcal"><div class="n" id="total-kcal">0</div><div class="l">Calories</div></div>
-      <div class="macros">${macro("protein", "Protein")}${macro("carbs", "Carbs")}${macro("fat", "Fat")}</div>
+      <div class="macros">${macro("protein", "Protein", "--viz-1")}${macro("carbs", "Carbs", "--viz-2")}${macro("fat", "Fat", "--viz-3")}</div>
+      <div class="macro-bar" id="macro-bar" aria-hidden="true"><i style="background:var(--viz-1)"></i><i style="background:var(--viz-2)"></i><i style="background:var(--viz-3)"></i></div>
+      <div class="goals" id="meal-goals"></div>
     </div>
     <div id="meal-sections"></div>`;
 }
@@ -1362,6 +1411,7 @@ async function renderMeals(dir = 0) {
   const version = mealVersion;
   ensureMealShell();
   showMealDay();
+  loadGoals().then(() => mealLogShown() && drawGoals());
   const cached = mealCache.get(day);
   const motion = dir ? "slide" : "fade";
   if (cached) {
@@ -1374,10 +1424,10 @@ async function renderMeals(dir = 0) {
   try {
     data = await api(`meals?day=${day}`);
   } catch (ex) {
-    if (current?.view === "meals" && mealDay === day && !cached) $("#meal-sections").innerHTML = `<div class="empty">${esc(ex.message)}</div>`;
+    if (mealLogShown() && mealDay === day && !cached) $("#meal-sections").innerHTML = `<div class="empty">${esc(ex.message)}</div>`;
     return;
   }
-  if (current?.view !== "meals" || mealDay !== day || version !== mealVersion) return; // moved on, or changed locally meanwhile
+  if (!mealLogShown() || mealDay !== day || version !== mealVersion) return; // moved on, or changed locally meanwhile
   if (JSON.stringify(data.items) === JSON.stringify(cached)) return;
   mealCache.set(day, data.items);
   mealItems = data.items;
@@ -1424,6 +1474,15 @@ function drawMeals(motion = "flip", dir = 0) {
   countTo($("#total-kcal"), mealTotalsShown.kcal, totals.kcal, fmtKcal);
   for (const k of ["protein", "carbs", "fat"]) countTo($(`#total-${k}`), mealTotalsShown[k], totals[k], fmtGrams);
   mealTotalsShown = totals;
+  const shares = macroShares(totals);
+  const parts = $("#macro-bar").children;
+  ["protein", "carbs", "fat"].forEach((k, i) => (parts[i].style.flexGrow = shares[k]));
+  drawGoals();
+}
+
+function drawGoals() {
+  const box = $("#meal-goals");
+  if (box) box.innerHTML = goalMetersHtml(mealTotalsShown);
 }
 
 const mealDayLabel = (day, today) => (day === today || day === localKey(new Date(Date.now() - 864e5)) ? fmtShort(day) : fmtDay(keyToDate(day)));
@@ -1436,7 +1495,7 @@ async function removeLoggedFood(id) {
   const restore = (saved) => {
     const items = [...(mealCache.get(day) || []), saved];
     setMealItems(items, day);
-    if (current?.view === "meals" && mealDay === day) drawMeals();
+    if (mealLogShown() && mealDay === day) drawMeals();
   };
   setMealItems(mealItems.filter((it) => it.id !== id), day);
   drawMeals();
@@ -1480,12 +1539,49 @@ Object.assign(actions, {
     await collapseOut(row);
     await removeLoggedFood(Number(d.id));
   },
+  "body-log"(d) {
+    openBodyLog(d.day);
+  },
+  "body-range"(d) {
+    setBodyRange(Number(d.days));
+  },
+  "open-plan"() {
+    startPlan();
+  },
+  "edit-body-goals"() {
+    drawBodyGoalsForm();
+  },
+  "edit-macro-goals"() {
+    drawMacroGoalsForm();
+  },
+  "log-recipe"(d) {
+    logRecipe(Number(d.id));
+  },
+  "recipe-add-ingredient"() {
+    openFood();
+  },
+  "recipe-edit-ingredient"(d) {
+    openLoggedFood(recipeDraft.ingredients[Number(d.i)]);
+  },
+  "recipe-remove-ingredient"(d) {
+    removeIngredient(recipeDraft.ingredients[Number(d.i)]);
+  },
+  "recipe-save"(d, btn) {
+    return saveRecipe(btn);
+  },
+  "recipe-back"() {
+    return leaveRecipe();
+  },
+  "recipe-delete"() {
+    return deleteRecipe();
+  },
 });
 
 /* food dialog: search, then choose an amount (or enter a food by hand) */
 
+// With a recipe open in the editor, this dialog picks ingredients rather than logging a meal.
 const mealSelect = () =>
-  `<label>Meal <select id="food-meal">${Object.entries(MEAL_NAMES)
+  recipeEditorOpen() ? "" : `<label>Meal <select id="food-meal">${Object.entries(MEAL_NAMES)
     .map(([k, v]) => `<option value="${k}"${k === foodMeal ? " selected" : ""}>${v}</option>`)
     .join("")}</select></label>`;
 
@@ -1498,10 +1594,11 @@ function openFood(meal) {
   $("#food").showModal();
   $("#food-q").focus();
   loadFoodRecents();
+  if (!recipeEditorOpen()) loadRecipes().catch(() => {}); // so recipes can be found and logged from here
 }
 
 function drawFoodSearch(q = "", message = "") {
-  $("#food-title").textContent = "Add food";
+  $("#food-title").textContent = recipeEditorOpen() ? "Add ingredient" : "Add food";
   $("#food-body").innerHTML = `
     <form id="food-search" class="food-form">
       ${mealSelect()}
@@ -1516,7 +1613,7 @@ function drawFoodSearch(q = "", message = "") {
 }
 
 const foodSourceLabel = (f) =>
-  f.recent ? "Added before" : f.source === "usda" ? "USDA" : f.source === "off" ? "Open Food Facts" : f.isPublic ? "Community" : "Only you";
+  f.source === "recipe" && !f.recent ? "Your recipe" : f.recent ? "Added before" : f.source === "usda" ? "USDA" : f.source === "off" ? "Open Food Facts" : f.isPublic ? "Community" : "Only you";
 
 function foodResultsHtml(message) {
   if (message) return `<p class="muted food-msg">${esc(message)}</p>`;
@@ -1545,14 +1642,21 @@ async function runFoodSearch() {
       return drawFoodAmount(food);
     }
     const { foods } = await api(`food/search?q=${encodeURIComponent(q)}`);
-    foodResults = foods;
-    box.innerHTML = foodResultsHtml(foods.length ? "" : "No foods found. Try other words, or enter it manually.");
+    foodResults = withRecipes(foods, q);
+    box.innerHTML = foodResultsHtml(foodResults.length ? "" : "No foods found. Try other words, or enter it manually.");
   } catch (ex) {
     foodResults = [];
     box.innerHTML = foodResultsHtml(ex.message);
   } finally {
     btn.disabled = false;
   }
+}
+
+// Recipes come first when logging. Their past logs would only repeat them, so those are dropped.
+function withRecipes(foods, q = "") {
+  if (recipeEditorOpen()) return foods;
+  const known = new Set((recipes || []).map((r) => r.name.toLowerCase()));
+  return [...recipeFoods(q), ...foods.filter((f) => !(f.recent && known.has(f.name.toLowerCase())))];
 }
 
 async function pickFood(food) {
@@ -1622,7 +1726,7 @@ const foodUnitOptions = (food) =>
 function drawFoodAmount(food) {
   foodPicked = food;
   if (!foodTouched) defaultFoodAmount(food);
-  $("#food-title").textContent = foodEditing ? "Edit food" : "How much?";
+  $("#food-title").textContent = foodEditing ? (recipeEditorOpen() ? "Edit ingredient" : "Edit food") : "How much?";
   $("#food-body").innerHTML = `
     <form id="food-amount" class="food-form">
       <div><div class="name">${esc(food.name)}</div>${food.brand ? `<div class="meta muted">${esc(food.brand)}</div>` : ""}</div>
@@ -1646,7 +1750,7 @@ const foodFormButtons = () => `
     <button type="button" data-food="back">${foodEditing ? "Cancel" : "Back"}</button>
     <button class="primary" type="submit">${foodEditing ? "Save" : "Add"}</button>
   </div>
-  ${foodEditing ? `<button type="button" class="link food-delete" data-food="delete-logged">Delete from this meal</button>` : ""}`;
+  ${foodEditing ? `<button type="button" class="link food-delete" data-food="delete-logged">${recipeEditorOpen() ? "Remove from this recipe" : "Delete from this meal"}</button>` : ""}`;
 
 // Update the amount form in place after more units arrive, without disturbing what's being typed.
 function syncFoodAmount() {
@@ -1861,7 +1965,7 @@ function drawFoodManual(v = {}) {
       <label>Name <input id="food-name" maxlength="80" autocomplete="off" required value="${esc(v.name ?? "")}"></label>
       ${mealSelect()}
       <div class="food-qty">
-        ${field("food-manual-qty", "Amount eaten", qty)}
+        ${field("food-manual-qty", recipeEditorOpen() ? "Amount used" : "Amount eaten", qty)}
         <label>Unit <select id="food-manual-unit">${units.map((u) => `<option${u === unit ? " selected" : ""}>${esc(u)}</option>`).join("")}</select></label>
       </div>
       ${field("food-kcal", "Total calories", v.kcal, true)}
@@ -1911,7 +2015,7 @@ async function loadFoodRecents() {
     const { foods } = await api("food/recent");
     const input = $("#food-q");
     if (!$("#food").open || !input || input.value.trim() || foodResults.length) return; // the user has moved on
-    foodResults = foods;
+    foodResults = withRecipes(foods);
     $("#food-results").innerHTML = foodResultsHtml();
   } catch {
     /* the list is a convenience; searching still works */
@@ -1919,20 +2023,23 @@ async function loadFoodRecents() {
 }
 
 async function saveFood(form, item) {
+  if (recipeEditorOpen()) return saveIngredient(item, foodEditing);
   const err = form.querySelector(".error");
   const btn = form.querySelector("button.primary");
   err.textContent = "";
   btn.disabled = true;
-  const day = mealDay;
+  const onStats = current?.view === "meals" && current.stats;
+  const day = mealLogShown() ? mealDay : localKey(new Date()); // Stats and Recipes have no day of their own, so food added there is today's
   const editing = foodEditing;
   try {
     const body = { ...item, day, meal: foodMeal };
     const { item: saved } = await (editing ? api(`meals/${editing.id}`, { method: "PUT", body }) : api("meals", { body }));
-    if (current?.view === "meals" && mealDay === day) {
+    if (mealLogShown() && mealDay === day) {
       setMealItems(editing ? mealItems.map((it) => (it.id === editing.id ? saved : it)) : [...mealItems, saved], day);
       drawMeals();
     } else {
       mealCache.delete(day);
+      if (onStats) loadMealStats();
     }
     toast(editing ? "Saved" : `Added to ${MEAL_NAMES[saved.meal].toLowerCase()}`);
     $("#food").close();
@@ -1950,6 +2057,12 @@ $("#food").addEventListener("close", () => {
 });
 $("#food-body").addEventListener("change", (e) => {
   if (e.target.id === "food-meal") foodMeal = e.target.value;
+  if (e.target.id === "body-day" && e.target.value) changeBodyDay(e.target.value);
+  if (e.target.id === "goal-unit") bodyGoalHint();
+  if (e.target.id === "goal-kcal") {
+    settleMacroInputs(macroGoalInputs());
+    drawMacroSum();
+  }
   if (e.target.id === "food-photo" && e.target.files[0]) pickLabelPhoto(e.target.files[0]);
   if (e.target.id === "food-unit") {
     foodUnit = e.target.value;
@@ -1962,6 +2075,12 @@ $("#food-body").addEventListener("change", (e) => {
   }
 });
 $("#food-body").addEventListener("input", (e) => {
+  if (e.target.id === "recipe-log-qty") drawRecipePreview();
+  if ("macro" in e.target.dataset) {
+    syncMacroInputs(macroGoalInputs(), e.target);
+    drawMacroSum();
+  }
+  if (e.target.id === "goal-weight") bodyGoalHint();
   if (e.target.id === "food-qty") {
     foodQty = e.target.value;
     foodTouched = foodQtyTyped = true;
@@ -1975,8 +2094,15 @@ $("#food-body").addEventListener("click", (e) => {
   if (act === "pick") {
     const food = foodResults[Number(btn.dataset.i)];
     if (food.source === "manual") drawFoodManual(food);
+    else if (food.recipe) drawRecipeLog(food.recipe);
     else pickFood(food);
   }
+  else if (act === "close") $("#food").close();
+  else if (act === "plan-open") {
+    $("#food").close();
+    startPlan();
+  }
+  else if (act === "body-delete") deleteBodyLog().catch((ex) => toast(ex.message, { error: true }));
   else if (act === "manual") drawFoodManual();
   else if (act === "camera") openFoodCamera();
   else if (act === "shutter") takeLabelPhoto();
@@ -1990,9 +2116,10 @@ $("#food-body").addEventListener("click", (e) => {
       });
   }
   else if (act === "delete-logged") {
-    const id = foodEditing.id;
+    const item = foodEditing;
     $("#food").close();
-    removeLoggedFood(id);
+    if (recipeEditorOpen()) removeIngredient(item);
+    else removeLoggedFood(item.id);
   } else if (act === "custom-edit") drawCustomFoodEdit(foodPicked);
   else if (act === "custom-cancel") {
     const food = foodEditingCustom;
@@ -2021,6 +2148,10 @@ $("#food-body").addEventListener("submit", (e) => {
   const form = e.target;
   if (form.id === "food-search") return runFoodSearch();
   if (!form.reportValidity()) return;
+  if (form.id === "food-body-log") return saveBodyLog(form);
+  if (form.id === "food-body-goals") return saveGoals(form, { weight: $("#goal-weight").value, weightUnit: $("#goal-unit").value, bodyFat: $("#goal-fat").value });
+  if (form.id === "food-macro-goals") return saveGoals(form, { kcal: $("#goal-kcal").value, protein: $("#goal-protein").value, carbs: $("#goal-carbs").value, fat: $("#goal-macro-fat").value });
+  if (form.id === "food-recipe-log") return saveFood(form, recipeLogItem(recipeLogging, Number($("#recipe-log-qty").value)));
   if (form.id === "food-scan-review") {
     return submitCustomFood(form, () => api("food/custom", { body: { ...customFoodBody(), scanId: form.dataset.scan } }));
   }
