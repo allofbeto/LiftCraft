@@ -61,6 +61,8 @@ async function start(u) {
 
 function signedOut() {
   user = null;
+  current = null;
+  mealCache.clear();
   $("body > .card").hidden = false;
   $("#app").hidden = true;
   $("#tabbar").hidden = true;
@@ -74,7 +76,7 @@ $("#tabbar").addEventListener("click", async (e) => {
   if (tab === "home") location.hash = "#/";
   else if (tab === "meals") location.hash = "#/meals";
   else if (tab === "profile") location.hash = "#/profile";
-  else if (tab === "add") await addFlow().catch((ex) => alert(ex.message));
+  else if (tab === "add") await addFlow().catch((ex) => toast(ex.message, { error: true }));
   else if (tab === "logout") await actions.logout();
 });
 
@@ -123,7 +125,7 @@ function addContext() {
   if (current?.view === "folder") folderId = current.id;
   else if (current?.view === "exercise") folderId = detail?.exercise?.folderId ?? null;
   const f = folders.find((x) => x.id === folderId);
-  return { folderId, label: f ? f.name : "LiftCraft" };
+  return { folderId, label: f ? f.name : "TorchRep" };
 }
 
 // The bottom-bar "Add" button: choose a type, then create it in context.
@@ -239,12 +241,12 @@ function renderHome() {
   const topFolders = folders.filter((f) => f.parentId == null);
   const unfiled = exercises.filter((x) => x.folderId == null);
   app.innerHTML = `
-    ${topbar(`Lift<span style="color:var(--accent)">Craft</span>`)}
+    ${topbar(`<span class="brand-bar"><img src="/brand/mascot.png" width="253" height="224" alt=""><img class="on-dark" src="/brand/wordmark.png" width="427" height="132" alt="TorchRep"><img class="on-light" src="/brand/wordmark-light.png" width="491" height="156" alt="TorchRep"></span>`)}
     <p class="muted" style="margin:0">Hi ${esc(user.firstName)} 👋</p>
     <h2 class="section">Folders</h2>
     <div class="list" data-reorder="folders">${topFolders.length ? topFolders.map(folderItem).join("") : `<div class="empty">No folders yet</div>`}</div>
     <h2 class="section">Exercises</h2>
-    <div class="list" data-reorder="exercises">${unfiled.length ? unfiled.map(exerciseItem).join("") : `<div class="empty">No loose exercises</div>`}</div>
+    <div class="list" data-reorder="exercises">${unfiled.length ? unfiled.map(exerciseItem).join("") : topFolders.length ? `<div class="empty">No loose exercises</div>` : emptyHero("Let's get to work. Add your first exercise to start logging.")}</div>
     <div class="actions">
       <button class="ghost" data-act="new-folder">+ Folder</button>
       <button class="primary" data-act="new-exercise">+ Exercise</button>
@@ -266,7 +268,7 @@ function renderFolder(id) {
     <div class="dropout" data-dropout="${f.parentId != null ? f.parentId : ""}">⬆ Move out to ${f.parentId != null ? esc(folders.find((p) => p.id === f.parentId)?.name || "parent") : "Home"}</div>
     ${subs.length ? `<h2 class="section">Folders</h2><div class="list" data-reorder="folders">${subs.map(folderItem).join("")}</div>` : ""}
     <h2 class="section">Exercises</h2>
-    <div class="list" data-reorder="exercises">${list.length ? list.map(exerciseItem).join("") : `<div class="empty">No exercises in this folder</div>`}</div>
+    <div class="list" data-reorder="exercises">${list.length ? list.map(exerciseItem).join("") : (subs.length ? `<div class="empty">No exercises in this folder</div>` : emptyHero("This folder is empty. Add an exercise to fill it."))}</div>
     <div class="actions">
       <button class="ghost" data-act="new-folder">+ Folder</button>
       <button class="primary" data-act="new-exercise">+ Exercise</button>
@@ -320,7 +322,7 @@ async function progressHtml() {
               </button>`,
             )
             .join("")
-        : `<div class="empty">Log a set to start tracking your progress.</div>`
+        : `${emptyHero("Log a set to start tracking your progress.")}`
     }
     <h2 class="section">Brain breaks</h2>
     <div class="stats">
@@ -339,18 +341,26 @@ async function renderProfile() {
       <div class="prof-row"><span class="k">Email</span><span class="v">${esc(user.email)}</span></div>
       <div class="prof-row"><span class="k">Folders</span><span class="v">${folders.length}</span></div>
     </div>
-    <div id="profile-progress"><div class="empty" style="margin-top:16px">Loading…</div></div>
+    <h2 class="section">Appearance</h2>
+    <div class="tabs theme-picker" role="radiogroup" aria-label="Appearance">
+      ${["auto", "light", "dark"]
+        .map((c) => `<button role="radio" data-act="set-theme" data-choice="${c}" aria-checked="${c === themeChoice()}" class="${c === themeChoice() ? "active" : ""}">${c[0].toUpperCase() + c.slice(1)}</button>`)
+        .join("")}
+    </div>
+    <div id="profile-progress"><h2 class="section">Progress</h2><div class="stats">${`<span class="skel skel-stat"></span>`.repeat(4)}</div></div>
     <div class="actions" style="grid-template-columns:1fr; margin-top:16px">
       <button class="ghost" data-act="logout">Log out</button>
     </div>
     <p class="food-credit muted">Food data from <a href="https://fdc.nal.usda.gov" target="_blank" rel="noopener">USDA FoodData Central</a> and <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>.</p>`;
   const html = await progressHtml();
-  if (current?.view !== "profile") return; // navigated away while loading
+  if (current?.view !== "profile" || !$("#profile-progress")) return; // navigated away while loading
   $("#profile-progress").innerHTML = html;
+  animateIn($("#profile-progress"));
 }
 
 async function renderExercise(id) {
-  app.innerHTML = topbar("", { back: "#/" });
+  app.innerHTML = topbar("", { back: "#/" }) + `<span class="skel skel-panel"></span>`.repeat(3);
+  const started = performance.now();
   try {
     detail = await api(`exercises/${id}`);
   } catch {
@@ -364,6 +374,7 @@ async function renderExercise(id) {
   unit = "lb";
   lastWeight = "";
   drawExercise();
+  if (performance.now() - started > 200) animateIn(app); // it replaced visible placeholders
 }
 
 function startOfWeek(d) {
@@ -487,25 +498,86 @@ function drawExercise() {
       </div>
     </section>`;
   window.scrollTo(0, y);
+  playExerciseMotion();
+}
+
+// What the next exercise redraw should animate: "day", "details", or a week step of -1 or 1.
+let exerciseMotion = null;
+
+function playExerciseMotion() {
+  const motion = exerciseMotion;
+  exerciseMotion = null;
+  if (!motion || !motionOK()) return;
+  if (typeof motion === "number") {
+    $(".week-grid")?.animate([{ opacity: 0, transform: `translateX(${motion * 32}px)` }, { opacity: 1, transform: "none" }], { duration: 220, easing: EASE_OUT });
+    return;
+  }
+  if (motion === "details") {
+    $(".panel.details")?.animate([{ opacity: 0, transform: "translateY(-8px)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: EASE_OUT });
+    return;
+  }
+  $(".wday.sel")?.classList.add("pop");
+  for (const el of document.querySelectorAll(".day-title, .notes-box")) el.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 200, easing: EASE_OUT });
+}
+
+// Eases in content that replaced something already on screen.
+function animateIn(el) {
+  el.classList.remove("content-in");
+  void el.offsetWidth;
+  el.classList.add("content-in");
 }
 
 /* ---------- routing ---------- */
+
+const TAB_ORDER = { home: 0, meals: 1, profile: 2 };
+
+// Which way a move between screens should slide: deeper or rightward goes forward.
+function navDirection(from, to) {
+  if (!from) return "fade";
+  const place = ({ view, id }) => {
+    if (view === "meals" || view === "profile") return [TAB_ORDER[view], 0];
+    if (view === "exercise") return [0, 100];
+    if (view === "folder") {
+      let depth = 1;
+      for (let f = folders.find((x) => x.id === id); f?.parentId != null; f = folders.find((x) => x.id === f.parentId)) depth++;
+      return [0, depth];
+    }
+    return [0, 0];
+  };
+  const [tabA, depthA] = place(from);
+  const [tabB, depthB] = place(to);
+  if (tabA !== tabB) return tabB > tabA ? "forward" : "back";
+  if (depthA !== depthB) return depthB > depthA ? "forward" : "back";
+  return "fade";
+}
+
+function renderView({ view, id }) {
+  if (view === "folder") return renderFolder(id);
+  if (view === "exercise") return renderExercise(id);
+  if (view === "meals") return renderMeals();
+  if (view === "profile") return renderProfile();
+  return renderHome();
+}
 
 function route() {
   if (!user) return;
   flushNote();
   flushExercise();
   const [, view, rawId] = location.hash.split("/");
+  if (view === "progress") return location.replace("#/profile"); // Progress now lives on Profile
   const id = Number(rawId);
+  const from = current;
   current = { view, id };
+  const to = current;
   setActiveTab(view);
-  if (view === "folder") renderFolder(id);
-  else if (view === "exercise") renderExercise(id);
-  else if (view === "meals") renderMeals();
-  else if (view === "progress") location.replace("#/profile"); // Progress now lives on Profile
-  else if (view === "profile") renderProfile();
-  else renderHome();
-  window.scrollTo(0, 0);
+  const paint = () => {
+    const rendered = renderView(to);
+    window.scrollTo(0, 0);
+    markViewIn(app);
+    return rendered;
+  };
+  // Hold the old screen briefly so fast loads swap straight to finished content, never longer.
+  viewTransition(() => (current === to ? Promise.race([paint(), sleep(220)]) : undefined), navDirection(from, to));
 }
 window.addEventListener("hashchange", route);
 
@@ -654,6 +726,9 @@ async function commitSet(explicit) {
     detail.notes[selDay] = updated;
     syncCounts();
     drawExercise();
+    $(".notes-box")?.classList.add("flash");
+    $(".save-btn")?.classList.add("logged");
+    burstFrom($(".save-btn"));
   } catch (ex) {
     err.textContent = ex.message;
   } finally {
@@ -705,7 +780,7 @@ const actions = {
   },
   async "delete-folder"() {
     const f = folders.find((x) => x.id === current.id);
-    if (!confirm("Delete this folder? Its contents will be kept.")) return;
+    if (!(await askConfirm({ title: `Delete "${f.name}"?`, message: "Its contents will be kept." }))) return;
     await api(`folders/${f.id}`, { method: "DELETE" });
     const parent = f.parentId ?? null; // contents move up to this folder's parent
     exercises.forEach((x) => x.folderId === f.id && (x.folderId = parent));
@@ -722,8 +797,8 @@ const actions = {
     location.hash = `#/exercise/${exercise.id}`;
   },
   async "delete-exercise"() {
-    if (!confirm("Delete this exercise and everything logged on it?")) return;
     const x = detail.exercise;
+    if (!(await askConfirm({ title: `Delete "${x.name}"?`, message: "Everything logged on it will be deleted too. This can't be undone." }))) return;
     await api(`exercises/${x.id}`, { method: "DELETE" });
     exercises = exercises.filter((e) => e.id !== x.id);
     location.hash = x.folderId != null ? `#/folder/${x.folderId}` : "#/";
@@ -731,12 +806,14 @@ const actions = {
   "pick-day"(d) {
     flushNote();
     selDay = d.day;
+    exerciseMotion = "day";
     drawExercise();
   },
   "go-last"(d) {
     flushNote();
     selDay = d.day;
     weekStart = startOfWeek(keyToDate(d.day)); // jump the calendar to the week holding that entry
+    exerciseMotion = "day";
     drawExercise();
   },
   week(d) {
@@ -747,6 +824,7 @@ const actions = {
     const now = new Date();
     selDay = localKey(now);
     weekStart = startOfWeek(now);
+    exerciseMotion = "day";
     drawExercise();
   },
   "toggle-unit"(d, btn) {
@@ -755,12 +833,21 @@ const actions = {
   },
   "toggle-details"() {
     detailsOpen = !detailsOpen;
+    if (detailsOpen) exerciseMotion = "details";
     drawExercise();
   },
   "toggle-split"() {
     detail.exercise.split = !detail.exercise.split;
     saveExercise(); // persist the unilateral setting on the exercise
     drawExercise();
+  },
+  "set-theme"(d) {
+    viewTransition(() => setThemeChoice(d.choice), "fade");
+    for (const b of document.querySelectorAll(".theme-picker button")) {
+      const on = b.dataset.choice === d.choice;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-checked", on);
+    }
   },
   "open-sudoku"() {
     openSudoku();
@@ -793,7 +880,7 @@ app.addEventListener("click", async (e) => {
   try {
     await actions[btn.dataset.act]?.(btn.dataset, btn);
   } catch (ex) {
-    alert(ex.message);
+    toast(ex.message, { error: true });
   }
 });
 
@@ -878,9 +965,13 @@ function onDragMove(e) {
   const prev = item.previousElementSibling;
   const next = item.nextElementSibling;
   if (prev?.classList.contains("item") && mid < prev.getBoundingClientRect().top + prev.offsetHeight / 2) {
+    const top = prev.getBoundingClientRect().top;
     list.insertBefore(item, prev);
+    slideFrom(prev, top);
   } else if (next?.classList.contains("item") && mid > next.getBoundingClientRect().top + next.offsetHeight / 2) {
+    const top = next.getBoundingClientRect().top;
     list.insertBefore(next, item);
+    slideFrom(next, top);
   }
 }
 
@@ -888,7 +979,9 @@ async function onDragEnd() {
   if (!drag) return;
   const { item, list, moved, drop, type, id } = drag;
   document.removeEventListener("pointermove", onDragMove);
+  const heldAt = item.style.transform;
   item.style.transform = "";
+  if (moved && heldAt && motionOK()) item.animate([{ transform: heldAt }, { transform: "none" }], { duration: 200, easing: EASE_SPRING }); // settle into its slot
   item.classList.remove("dragging");
   document.body.classList.remove("dragging-active");
   clearDropHighlights();
@@ -930,8 +1023,10 @@ async function onDragEnd() {
 }
 
 function rerenderCurrent() {
-  if (current?.view === "folder") renderFolder(current.id);
-  else renderHome();
+  flip(app, ".item", () => {
+    if (current?.view === "folder") renderFolder(current.id);
+    else renderHome();
+  });
 }
 
 async function reload() {
@@ -944,6 +1039,7 @@ async function reload() {
 function changeWeek(delta) {
   weekStart = new Date(weekStart);
   weekStart.setDate(weekStart.getDate() + 7 * delta);
+  exerciseMotion = delta;
   drawExercise();
 }
 
@@ -972,6 +1068,7 @@ app.addEventListener("pointerup", (e) => {
 /* ---------- Sudoku brain break ---------- */
 // A 4×4 puzzle (four boxes of 2 rows × 2 columns, digits 1–4) kept in localStorage so it survives reloads; cleared and regenerated
 // only when the player solves it. Pure client-side — no server involved.
+// These keys keep their original name so saved puzzles and stats survive the rebrand.
 const SUDOKU_KEY = "liftcraft.sudoku";
 const SUDOKU_STATS_KEY = "liftcraft.sudokuStats"; // { completed, timeMs } — lifetime totals
 const S_BOX_R = 2, S_BOX_C = 2; // box height and width
@@ -1166,20 +1263,26 @@ function sudokuSolved() {
   sudokuSaveStats();
   sudokuAccrue(); // bank the time up to the solve
   sudokuStatus("Solved! 🎉 Fresh puzzle coming up…");
-  $("#sudoku-grid").querySelectorAll("input").forEach((el) => (el.disabled = true));
+  const grid = $("#sudoku-grid");
+  grid.querySelectorAll("input").forEach((el) => (el.disabled = true));
+  grid.classList.add("solved");
+  burstFrom(grid);
+  setTimeout(() => burstFrom(grid), 180);
   setTimeout(() => {
+    grid.classList.remove("solved");
     sudoku = sudokuNew();
     sudokuSave();
     drawSudoku();
+    animateIn(grid);
     sudokuStatus("New puzzle ready.");
-  }, 1000);
+  }, 1300);
 }
 
 $("#sudoku-grid").addEventListener("input", onSudokuInput);
 $("#sudoku").addEventListener("close", () => { sudokuAccrue(); sudokuOpenedAt = 0; });
 $("#sudoku-close").addEventListener("click", () => $("#sudoku").close());
-$("#sudoku-new").addEventListener("click", () => {
-  if (!confirm("Start a new puzzle? Your current progress will be lost.")) return;
+$("#sudoku-new").addEventListener("click", async () => {
+  if (!(await askConfirm({ title: "Start a new puzzle?", message: "Your current progress will be lost.", confirmLabel: "New puzzle" }))) return;
   sudoku = sudokuNew();
   sudokuSave();
   drawSudoku();
@@ -1197,6 +1300,8 @@ let foodQty = "1"; // amount field, as typed
 let foodUnit = "g"; // a measure label, or g / ml / oz
 let foodTouched = false; // the user has changed the amount or unit
 let foodQtyTyped = false; // the user has typed in the amount field
+let foodEditing = null; // the logged item being edited, if any
+let foodEditingCustom = null; // the scanned food being edited, if any
 
 const fmtKcal = (n) => Math.round(n || 0).toLocaleString("en-US");
 const fmtGrams = (n) => `${Math.round((n || 0) * 10) / 10}g`;
@@ -1216,73 +1321,164 @@ function mealAmountText(it) {
   return `${it.qty} × ${it.unit}${grams ? ` (${grams})` : ""}`;
 }
 
-async function renderMeals() {
-  mealDay = mealDay || localKey(new Date());
-  const day = mealDay;
-  app.innerHTML = `${topbar("Meals")}<div class="empty">Loading…</div>`;
-  let data;
-  try {
-    data = await api(`meals?day=${day}`);
-  } catch (ex) {
-    if (current?.view === "meals") app.innerHTML = `${topbar("Meals")}<div class="empty">${esc(ex.message)}</div>`;
-    return;
-  }
-  if (current?.view !== "meals" || mealDay !== day) return; // navigated away while loading
-  mealItems = data.items;
-  drawMeals();
+const mealCache = new Map(); // day, to the items last seen: lets visited days appear instantly
+let mealVersion = 0; // bumped on local changes, so a slower fetch can't overwrite them
+let mealTotalsShown = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+
+function setMealItems(items, day = mealDay) {
+  mealVersion++;
+  mealCache.set(day, items);
+  if (day === mealDay) mealItems = items;
 }
 
-function drawMeals() {
-  const today = localKey(new Date());
-  const macro = (k, label) => `<div class="macro"><div class="n">${fmtGrams(sumOf(mealItems, k))}</div><div class="l">${label}</div></div>`;
-  const sections = Object.entries(MEAL_NAMES)
-    .map(([meal, label]) => {
-      const items = mealItems.filter((it) => it.meal === meal);
-      const rows = items
-        .map((it) => {
-          const detail = [it.brand, mealAmountText(it)].filter(Boolean).join(" · ");
-          return `<div class="food-row">
-            <div class="food-main"><div class="name">${esc(it.name)}</div>${detail ? `<div class="meta">${esc(detail)}</div>` : ""}</div>
-            <div class="food-kcal">${fmtKcal(it.kcal)}<small> kcal</small></div>
-            <button class="x" data-act="delete-food" data-id="${it.id}" aria-label="Remove ${esc(it.name)}">×</button>
-          </div>`;
-        })
-        .join("");
-      return `<h2 class="section meal-head"><span>${label}</span>${items.length ? `<span>${fmtKcal(sumOf(items, "kcal"))} kcal</span>` : ""}</h2>
-        ${rows}<button class="ghost add-food" data-act="add-food" data-meal="${meal}">+ Add food</button>`;
-    })
-    .join("");
+const skeletons = (cls, n) => `<span class="skel ${cls}"></span>`.repeat(n);
+const emptyHero = (text) => `<div class="empty-hero"><img src="/brand/mascot.png" width="253" height="224" alt=""><p>${esc(text)}</p></div>`;
+
+// The header and totals stay on screen while only the list below them changes.
+function ensureMealShell() {
+  if ($("#meal-sections")) return;
+  mealTotalsShown = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+  const macro = (k, label) => `<div class="macro"><div class="n" id="total-${k}">0g</div><div class="l">${label}</div></div>`;
   app.innerHTML = `
     ${topbar("Meals")}
     <div class="cal-head meal-day">
       <button class="icon-btn" data-act="meal-day" data-d="-1" aria-label="Previous day">‹</button>
-      <strong>${mealDayLabel(mealDay, today)}</strong>
+      <strong id="meal-day-label"></strong>
       <button class="icon-btn" data-act="meal-day" data-d="1" aria-label="Next day">›</button>
     </div>
     <div class="meal-total">
-      <div class="kcal"><div class="n">${fmtKcal(sumOf(mealItems, "kcal"))}</div><div class="l">Calories</div></div>
+      <div class="kcal"><div class="n" id="total-kcal">0</div><div class="l">Calories</div></div>
       <div class="macros">${macro("protein", "Protein")}${macro("carbs", "Carbs")}${macro("fat", "Fat")}</div>
     </div>
-    ${sections}`;
+    <div id="meal-sections"></div>`;
+}
+
+const showMealDay = () => ($("#meal-day-label").textContent = mealDayLabel(mealDay, localKey(new Date())));
+
+// dir is -1 or 1 when stepping between days, which slides the list that way.
+async function renderMeals(dir = 0) {
+  mealDay = mealDay || localKey(new Date());
+  const day = mealDay;
+  const version = mealVersion;
+  ensureMealShell();
+  showMealDay();
+  const cached = mealCache.get(day);
+  const motion = dir ? "slide" : "fade";
+  if (cached) {
+    mealItems = cached;
+    drawMeals(motion, dir);
+  } else {
+    $("#meal-sections").innerHTML = skeletons("skel-row", 4);
+  }
+  let data;
+  try {
+    data = await api(`meals?day=${day}`);
+  } catch (ex) {
+    if (current?.view === "meals" && mealDay === day && !cached) $("#meal-sections").innerHTML = `<div class="empty">${esc(ex.message)}</div>`;
+    return;
+  }
+  if (current?.view !== "meals" || mealDay !== day || version !== mealVersion) return; // moved on, or changed locally meanwhile
+  if (JSON.stringify(data.items) === JSON.stringify(cached)) return;
+  mealCache.set(day, data.items);
+  mealItems = data.items;
+  drawMeals(cached ? "flip" : motion, dir);
+}
+
+function mealSectionsHtml() {
+  if (!mealItems.length) {
+    const blank = Object.entries(MEAL_NAMES).map(([meal, label]) => mealSectionHtml(meal, label, [])).join("");
+    return `<div data-flip="hero">${emptyHero("Nothing logged yet. What's fueling you today?")}</div>${blank}`;
+  }
+  return Object.entries(MEAL_NAMES).map(([meal, label]) => mealSectionHtml(meal, label, mealItems.filter((it) => it.meal === meal))).join("");
+}
+
+function mealSectionHtml(meal, label, items) {
+  const rows = items
+    .map((it) => {
+      const detail = [it.brand, mealAmountText(it)].filter(Boolean).join(" · ");
+      return `<div class="food-row" data-flip="row:${it.id}">
+        <button class="food-main food-edit" data-act="edit-food" data-id="${it.id}" aria-label="Edit ${esc(it.name)}"><span class="name">${esc(it.name)}</span>${detail ? `<span class="meta">${esc(detail)}</span>` : ""}</button>
+        <div class="food-kcal">${fmtKcal(it.kcal)}<small> kcal</small></div>
+        <button class="x" data-act="delete-food" data-id="${it.id}" aria-label="Remove ${esc(it.name)}">×</button>
+      </div>`;
+    })
+    .join("");
+  return `<h2 class="section meal-head" data-flip="head:${meal}"><span>${label}</span>${items.length ? `<span>${fmtKcal(sumOf(items, "kcal"))} kcal</span>` : ""}</h2>
+    ${rows}<button class="ghost add-food" data-flip="add:${meal}" data-act="add-food" data-meal="${meal}">+ Add food</button>`;
+}
+
+function drawMeals(motion = "flip", dir = 0) {
+  ensureMealShell();
+  showMealDay();
+  const sections = $("#meal-sections");
+  const update = () => (sections.innerHTML = mealSectionsHtml());
+  if (motion === "flip") flip(sections, "[data-flip]", update);
+  else {
+    update();
+    if (motionOK()) {
+      const from = motion === "slide" ? `translateX(${dir * 26}px)` : "translateY(6px)";
+      sections.animate([{ opacity: 0, transform: from }, { opacity: 1, transform: "none" }], { duration: 220, easing: EASE_OUT });
+    }
+  }
+  const totals = { kcal: sumOf(mealItems, "kcal"), protein: sumOf(mealItems, "protein"), carbs: sumOf(mealItems, "carbs"), fat: sumOf(mealItems, "fat") };
+  countTo($("#total-kcal"), mealTotalsShown.kcal, totals.kcal, fmtKcal);
+  for (const k of ["protein", "carbs", "fat"]) countTo($(`#total-${k}`), mealTotalsShown[k], totals[k], fmtGrams);
+  mealTotalsShown = totals;
 }
 
 const mealDayLabel = (day, today) => (day === today || day === localKey(new Date(Date.now() - 864e5)) ? fmtShort(day) : fmtDay(keyToDate(day)));
+
+// Removes a logged food right away and offers Undo. If the server refuses, the food comes back.
+async function removeLoggedFood(id) {
+  const day = mealDay;
+  const item = mealItems.find((it) => it.id === id);
+  if (!item) return;
+  const restore = (saved) => {
+    const items = [...(mealCache.get(day) || []), saved];
+    setMealItems(items, day);
+    if (current?.view === "meals" && mealDay === day) drawMeals();
+  };
+  setMealItems(mealItems.filter((it) => it.id !== id), day);
+  drawMeals();
+  try {
+    await api(`meals/${id}`, { method: "DELETE" });
+  } catch (ex) {
+    restore(item);
+    toast(ex.message, { error: true });
+    return;
+  }
+  toast(`Removed ${item.name}`, {
+    action: "Undo",
+    onAction: async () => {
+      try {
+        const { id: _old, ...fields } = item;
+        const { item: saved } = await api("meals", { body: { ...fields, day } });
+        restore(saved);
+      } catch (ex) {
+        toast(ex.message, { error: true });
+      }
+    },
+  });
+}
 
 Object.assign(actions, {
   "meal-day"(d) {
     const next = keyToDate(mealDay);
     next.setDate(next.getDate() + Number(d.d));
     mealDay = localKey(next);
-    renderMeals();
+    renderMeals(Number(d.d));
   },
   "add-food"(d) {
     openFood(d.meal);
   },
-  async "delete-food"(d) {
-    const id = Number(d.id);
-    await api(`meals/${id}`, { method: "DELETE" });
-    mealItems = mealItems.filter((it) => it.id !== id);
-    drawMeals();
+  "edit-food"(d) {
+    const item = mealItems.find((it) => it.id === Number(d.id));
+    if (item) openLoggedFood(item);
+  },
+  async "delete-food"(d, btn) {
+    const row = btn.closest(".food-row");
+    await collapseOut(row);
+    await removeLoggedFood(Number(d.id));
   },
 });
 
@@ -1294,12 +1490,14 @@ const mealSelect = () =>
     .join("")}</select></label>`;
 
 function openFood(meal) {
+  foodEditing = null;
   foodMeal = meal || mealForNow();
   foodResults = [];
   foodPicked = null;
   drawFoodSearch();
   $("#food").showModal();
   $("#food-q").focus();
+  loadFoodRecents();
 }
 
 function drawFoodSearch(q = "", message = "") {
@@ -1318,7 +1516,7 @@ function drawFoodSearch(q = "", message = "") {
 }
 
 const foodSourceLabel = (f) =>
-  f.source === "usda" ? "USDA" : f.source === "off" ? "Open Food Facts" : f.isPublic ? "Community" : "Only you";
+  f.recent ? "Added before" : f.source === "usda" ? "USDA" : f.source === "off" ? "Open Food Facts" : f.isPublic ? "Community" : "Only you";
 
 function foodResultsHtml(message) {
   if (message) return `<p class="muted food-msg">${esc(message)}</p>`;
@@ -1326,7 +1524,7 @@ function foodResultsHtml(message) {
     .map(
       (f, i) => `<button type="button" class="food-result" data-food="pick" data-i="${i}">
         <span class="food-main"><span class="name">${esc(f.name)}</span><span class="meta">${esc([f.brand, foodSourceLabel(f)].filter(Boolean).join(" · "))}</span></span>
-        <span class="meta">${fmtKcal(f.per100.kcal)} kcal/100g</span>
+        <span class="meta">${f.per100 ? `${fmtKcal(f.per100.kcal)} kcal/100g` : `${fmtKcal(f.kcal)} kcal`}</span>
       </button>`,
     )
     .join("");
@@ -1337,7 +1535,7 @@ async function runFoodSearch() {
   if (!q) return;
   const box = $("#food-results");
   const btn = $("#food-search button.primary");
-  box.innerHTML = `<p class="muted food-msg">Searching…</p>`;
+  box.innerHTML = `<span class="skel skel-result"></span>`.repeat(4);
   btn.disabled = true;
   try {
     if (/^\d{8,14}$/.test(q)) {
@@ -1360,16 +1558,28 @@ async function runFoodSearch() {
 async function pickFood(food) {
   foodTouched = foodQtyTyped = false;
   drawFoodAmount(food);
-  // Search results can omit a food's household units, so fetch its full record when we can.
-  const path = food.source === "usda" ? `food/usda/${food.id}` : /^\d{8,14}$/.test(food.code) ? `food/barcode/${food.code}` : null;
+  enrichFood(food);
+}
+
+// Search results and past logs can omit a food's household units, so fetch its full record when we can.
+async function enrichFood(food) {
+  const path =
+    food.source === "usda" ? `food/usda/${food.id}`
+    : food.source === "custom" ? `food/custom/${food.id}`
+    : /^\d{8,14}$/.test(food.code) ? `food/barcode/${food.code}`
+    : null;
   if (!path) return;
   try {
     const { food: full } = await api(path);
     if (foodPicked !== food || !$("#food").open) return;
-    food.measures = full.measures;
-    food.gPerMl = full.gPerMl;
-    food.densityKnown = full.densityKnown;
-    syncFoodAmount();
+    const known = new Set(full.measures.map((m) => m.label));
+    food.measures = [...full.measures, ...food.measures.filter((m) => !known.has(m.label))]; // keep the unit last used
+    if (full.densityKnown || !food.densityKnown) {
+      food.gPerMl = full.gPerMl;
+      food.densityKnown = full.densityKnown;
+    }
+    if (food.source === "custom") Object.assign(food, { isPublic: full.isPublic, mine: full.mine, verifiedScans: full.verifiedScans, scansToPublish: full.scansToPublish, serving: full.serving });
+    if ($("#food-qty")) syncFoodAmount();
   } catch {
     /* extra units are optional; the ones already shown still work */
   }
@@ -1392,8 +1602,13 @@ function foodTotals(food, grams) {
   return { kcal: scale(food.per100.kcal), protein: scale(food.per100.protein), carbs: scale(food.per100.carbs), fat: scale(food.per100.fat) };
 }
 
-// The sensible starting amount: one of the food's own units, otherwise 100 g.
+// The sensible starting amount: what was logged last time, else one of the food's own units, else 100 g.
 function defaultFoodAmount(food) {
+  if (food.last) {
+    foodUnit = food.last.unit;
+    foodQty = String(food.last.qty);
+    return;
+  }
   const first = food.measures[0];
   foodUnit = first ? first.label : "g";
   foodQty = first ? "1" : "100";
@@ -1407,32 +1622,38 @@ const foodUnitOptions = (food) =>
 function drawFoodAmount(food) {
   foodPicked = food;
   if (!foodTouched) defaultFoodAmount(food);
-  $("#food-title").textContent = "How much?";
+  $("#food-title").textContent = foodEditing ? "Edit food" : "How much?";
   $("#food-body").innerHTML = `
     <form id="food-amount" class="food-form">
       <div><div class="name">${esc(food.name)}</div>${food.brand ? `<div class="meta muted">${esc(food.brand)}</div>` : ""}</div>
       ${mealSelect()}
       <div class="food-qty">
-        <label>Amount <input id="food-qty" type="number" inputmode="decimal" min="0.01" max="100000" step="any" value="${esc(foodQty)}" required></label>
+        <label>Amount <input id="food-qty" type="number" inputmode="decimal" min="0.01" max="10000" step="any" value="${esc(foodQty)}" required></label>
         <label>Unit <select id="food-unit">${foodUnitOptions(food)}</select></label>
       </div>
       <div id="food-preview" class="food-preview"></div>
-      ${customFoodNote(food)}
+      <div id="food-custom-note">${customFoodNote(food)}</div>
       <p id="food-note" class="food-note muted" hidden></p>
       <p class="error" role="alert"></p>
-      <div class="dlg-actions">
-        <button type="button" data-food="back">Back</button>
-        <button class="primary" type="submit">Add</button>
-      </div>
+      ${foodFormButtons()}
     </form>`;
   drawFoodPreview();
 }
+
+// Back and Add when adding. Cancel, Save and Delete when editing something already logged.
+const foodFormButtons = () => `
+  <div class="dlg-actions">
+    <button type="button" data-food="back">${foodEditing ? "Cancel" : "Back"}</button>
+    <button class="primary" type="submit">${foodEditing ? "Save" : "Add"}</button>
+  </div>
+  ${foodEditing ? `<button type="button" class="link food-delete" data-food="delete-logged">Delete from this meal</button>` : ""}`;
 
 // Update the amount form in place after more units arrive, without disturbing what's being typed.
 function syncFoodAmount() {
   if (!foodTouched) defaultFoodAmount(foodPicked);
   $("#food-unit").innerHTML = foodUnitOptions(foodPicked);
   if (!foodQtyTyped) $("#food-qty").value = foodQty;
+  $("#food-custom-note").innerHTML = customFoodNote(foodPicked);
   drawFoodPreview();
 }
 
@@ -1481,7 +1702,7 @@ async function openFoodCamera(message = "") {
     <p id="food-camera-msg" class="muted food-msg">${esc(message || "Opening camera…")}</p>
     <button type="button" id="food-shutter" class="primary food-shutter" data-food="shutter" hidden>Take photo</button>
     <label id="food-pick" class="ghost food-scan" hidden>Choose a photo<input id="food-photo" type="file" accept="image/*" capture="environment" hidden></label>
-    <p class="food-note muted food-center">The photo goes to Anthropic to be read, and LiftCraft doesn't keep it.</p>
+    <p class="food-note muted food-center">The photo goes to Anthropic to be read, and TorchRep doesn't keep it.</p>
     <div class="dlg-actions food-camera-back"><button type="button" data-food="back">Back</button></div>`;
   const fallback = (text) => {
     $("#food-camera-msg").textContent = message || text;
@@ -1535,7 +1756,7 @@ async function pickLabelPhoto(file) {
 async function sendLabelPhoto(image) {
   stopFoodCamera();
   const token = foodCameraToken;
-  $("#food-body").innerHTML = `<p class="muted food-msg">Reading label…</p>`;
+  $("#food-body").innerHTML = `<div class="food-reading"><img src="/brand/mascot.png" width="253" height="224" alt=""><p class="muted food-msg">Reading label…</p></div>`;
   try {
     const { scanId, reading } = await api("food/scan", { body: { image, mediaType: "image/jpeg" } });
     if (token === foodCameraToken) drawFoodScanReview(scanId, reading);
@@ -1544,48 +1765,69 @@ async function sendLabelPhoto(image) {
   }
 }
 
+const customFoodFields = (v, note) => {
+  const num = (id, label, value) =>
+    `<label>${label} <input id="${id}" type="number" inputmode="decimal" min="0" max="5000" step="any" value="${value ?? ""}" required></label>`;
+  return `
+      <label>Item name <input id="scan-name" maxlength="80" autocomplete="off" required placeholder="Exactly as on the package" value="${esc(v.name ?? "")}"></label>
+      <label>Brand <input id="scan-brand" maxlength="80" autocomplete="off" value="${esc(v.brand ?? "")}"></label>
+      <label>Serving as printed <input id="scan-serving" maxlength="80" autocomplete="off" value="${esc(v.label ?? "")}"></label>
+      <div class="row">${num("scan-grams", "Serving (g or ml)", v.grams)}${num("scan-kcal", "Calories", v.kcal)}</div>
+      <div class="row">${num("scan-protein", "Protein (g)", v.protein)}${num("scan-carbs", "Carbs (g)", v.carbs)}</div>
+      ${num("scan-fat", "Fat (g)", v.fat)}
+      <p class="food-note muted">${note}</p>
+      <p class="error" role="alert"></p>
+      <div class="dlg-actions">
+        <button type="button" data-food="${v.back}">Back</button>
+        <button class="primary" type="submit">Save</button>
+      </div>`;
+};
+
 function drawFoodScanReview(scanId, r) {
   foodPicked = null;
   $("#food-title").textContent = "Check the label";
-  const num = (id, label, v) =>
-    `<label>${label} <input id="${id}" type="number" inputmode="decimal" min="0" max="5000" step="any" value="${v ?? ""}" required></label>`;
   $("#food-body").innerHTML = `
     <form id="food-scan-review" class="food-form" data-scan="${esc(scanId)}">
-      <label>Item name <input id="scan-name" maxlength="80" autocomplete="off" required placeholder="Exactly as on the package"></label>
-      <label>Brand <input id="scan-brand" maxlength="80" autocomplete="off"></label>
-      <label>Serving as printed <input id="scan-serving" maxlength="80" autocomplete="off" value="${esc(r.serving_label ?? "")}"></label>
-      <div class="row">${num("scan-grams", "Serving (g or ml)", r.serving_grams)}${num("scan-kcal", "Calories", r.calories)}</div>
-      <div class="row">${num("scan-protein", "Protein (g)", r.protein_g)}${num("scan-carbs", "Carbs (g)", r.carbs_g)}</div>
-      ${num("scan-fat", "Fat (g)", r.fat_g)}
-      <p class="food-note muted">Check these against the label. This food becomes public once 3 people scan the same label and enter the same name. If you change a number, it stays private to you.</p>
-      <p class="error" role="alert"></p>
-      <div class="dlg-actions">
-        <button type="button" data-food="back">Back</button>
-        <button class="primary" type="submit">Save</button>
-      </div>
+      ${customFoodFields(
+        { back: "back", label: r.serving_label, grams: r.serving_grams, kcal: r.calories, protein: r.protein_g, carbs: r.carbs_g, fat: r.fat_g },
+        "Check these against the label. This food becomes public once 3 people scan the same label and enter the same name. If you change a number, it stays private to you.",
+      )}
     </form>`;
   $("#scan-name").focus();
 }
 
-async function saveScannedFood(form) {
+function drawCustomFoodEdit(food) {
+  foodEditingCustom = food;
+  $("#food-title").textContent = "Edit my food";
+  $("#food-body").innerHTML = `
+    <form id="food-custom-edit" class="food-form">
+      ${customFoodFields(
+        { back: "custom-cancel", name: food.name, brand: food.brand, ...food.serving },
+        "Your edits are private to you, and they don't change what other people see or what you've already logged.",
+      )}
+    </form>`;
+}
+
+const customFoodBody = () => ({
+  name: $("#scan-name").value,
+  brand: $("#scan-brand").value,
+  servingLabel: $("#scan-serving").value,
+  servingGrams: $("#scan-grams").value,
+  kcal: $("#scan-kcal").value,
+  protein: $("#scan-protein").value,
+  carbs: $("#scan-carbs").value,
+  fat: $("#scan-fat").value,
+});
+
+// Shared by scanned foods and edits: on success, carry on to the amount screen with the saved food.
+async function submitCustomFood(form, request) {
   const err = form.querySelector(".error");
   const btn = form.querySelector("button.primary");
   err.textContent = "";
   btn.disabled = true;
   try {
-    const { food } = await api("food/custom", {
-      body: {
-        scanId: form.dataset.scan,
-        name: $("#scan-name").value,
-        brand: $("#scan-brand").value,
-        servingLabel: $("#scan-serving").value,
-        servingGrams: $("#scan-grams").value,
-        kcal: $("#scan-kcal").value,
-        protein: $("#scan-protein").value,
-        carbs: $("#scan-carbs").value,
-        fat: $("#scan-fat").value,
-      },
-    });
+    const { food } = await request();
+    foodEditingCustom = null;
     foodTouched = foodQtyTyped = false;
     drawFoodAmount(food);
   } catch (ex) {
@@ -1594,38 +1836,86 @@ async function saveScannedFood(form) {
   }
 }
 
-// Status line for a scanned food on the amount screen.
+// Status line for a scanned food on the amount screen, with edit and remove for its owner.
 function customFoodNote(food) {
-  if (food.source !== "custom") return "";
-  if (food.isPublic) {
-    return `<p class="food-note muted">Community food from scanned labels. <button type="button" class="link food-report" data-food="report">Report a problem</button></p>`;
-  }
-  return `<p class="food-note muted">Only you can see this. ${food.verifiedScans} of ${food.scansToPublish} matching scans so far.</p>`;
+  if (food.source !== "custom" || food.isPublic === undefined) return "";
+  const status = food.isPublic
+    ? `Community food from scanned labels.${foodEditing ? "" : ` <button type="button" class="link food-report" data-food="report">Report a problem</button>`}`
+    : `Only you can see this. ${food.verifiedScans} of ${food.scansToPublish} matching scans so far.`;
+  const manage = food.mine && !foodEditing
+    ? ` <button type="button" class="link food-report" data-food="custom-edit">Edit</button> <button type="button" class="link food-report" data-food="custom-remove">Remove from my foods</button>`
+    : "";
+  return `<p class="food-note muted">${status}${manage}</p>`;
 }
 
-function drawFoodManual() {
+function drawFoodManual(v = {}) {
   foodPicked = null;
-  $("#food-title").textContent = "Enter manually";
-  const field = (id, label, required) =>
-    `<label>${label} <input id="${id}" type="number" inputmode="decimal" min="0" max="100000" step="any"${required ? " required" : ""}></label>`;
+  $("#food-title").textContent = foodEditing ? "Edit food" : "Enter manually";
+  const field = (id, label, value, required) =>
+    `<label>${label} <input id="${id}" type="number" inputmode="decimal" min="0" max="100000" step="any" value="${value ?? ""}"${required ? " required" : ""}></label>`;
+  const qty = v.qty ?? v.grams;
+  const unit = v.qty != null && v.unit ? v.unit : "g";
+  const units = MANUAL_UNITS.includes(unit) ? MANUAL_UNITS : [unit, ...MANUAL_UNITS];
   $("#food-body").innerHTML = `
-    <form id="food-manual" class="food-form">
-      <label>Name <input id="food-name" maxlength="80" autocomplete="off" required></label>
+    <form id="food-manual" class="food-form" data-brand="${esc(v.brand ?? "")}">
+      <label>Name <input id="food-name" maxlength="80" autocomplete="off" required value="${esc(v.name ?? "")}"></label>
       ${mealSelect()}
       <div class="food-qty">
-        ${field("food-manual-qty", "Amount eaten")}
-        <label>Unit <select id="food-manual-unit">${MANUAL_UNITS.map((u) => `<option>${u}</option>`).join("")}</select></label>
+        ${field("food-manual-qty", "Amount eaten", qty)}
+        <label>Unit <select id="food-manual-unit">${units.map((u) => `<option${u === unit ? " selected" : ""}>${esc(u)}</option>`).join("")}</select></label>
       </div>
-      ${field("food-kcal", "Total calories", true)}
-      <div class="row">${field("food-protein", "Protein (g)")}${field("food-carbs", "Carbs (g)")}</div>
-      ${field("food-fat", "Fat (g)")}
+      ${field("food-kcal", "Total calories", v.kcal, true)}
+      <div class="row">${field("food-protein", "Protein (g)", v.protein)}${field("food-carbs", "Carbs (g)", v.carbs)}</div>
+      ${field("food-fat", "Fat (g)", v.fat)}
       <p class="error" role="alert"></p>
-      <div class="dlg-actions">
-        <button type="button" data-food="back">Back</button>
-        <button class="primary" type="submit">Add</button>
-      </div>
+      ${foodFormButtons()}
     </form>`;
   $("#food-name").focus();
+}
+
+// Rebuilds a pickable food from a logged item, using what was saved with it.
+function itemToFood(it) {
+  const source = it.source || (it.code ? "off" : "");
+  if (!source || !(it.grams > 0)) return null;
+  const scale = (v) => (v == null ? null : (v / it.grams) * 100);
+  const qty = it.qty > 0 && it.unit ? it.qty : null;
+  const isHousehold = qty && !["g", "ml", "oz"].includes(it.unit);
+  return {
+    source,
+    id: it.code,
+    code: source === "off" ? it.code : "",
+    name: it.name,
+    brand: it.brand,
+    per100: { kcal: scale(it.kcal), protein: scale(it.protein), carbs: scale(it.carbs), fat: scale(it.fat) },
+    measures: isHousehold ? [{ label: it.unit, grams: Math.round((it.grams / qty) * 10) / 10 }] : [],
+    gPerMl: qty && it.unit === "ml" ? it.grams / qty : 1,
+    densityKnown: !!(qty && it.unit === "ml"),
+    last: qty ? { qty, unit: it.unit } : { qty: it.grams, unit: "g" },
+  };
+}
+
+function openLoggedFood(item) {
+  foodEditing = item;
+  foodMeal = item.meal;
+  foodResults = [];
+  foodTouched = foodQtyTyped = false;
+  const food = itemToFood(item);
+  if (food) drawFoodAmount(food);
+  else drawFoodManual(item);
+  $("#food").showModal();
+  if (food) enrichFood(food);
+}
+
+async function loadFoodRecents() {
+  try {
+    const { foods } = await api("food/recent");
+    const input = $("#food-q");
+    if (!$("#food").open || !input || input.value.trim() || foodResults.length) return; // the user has moved on
+    foodResults = foods;
+    $("#food-results").innerHTML = foodResultsHtml();
+  } catch {
+    /* the list is a convenience; searching still works */
+  }
 }
 
 async function saveFood(form, item) {
@@ -1634,12 +1924,17 @@ async function saveFood(form, item) {
   err.textContent = "";
   btn.disabled = true;
   const day = mealDay;
+  const editing = foodEditing;
   try {
-    const { item: saved } = await api("meals", { body: { ...item, day, meal: foodMeal } });
+    const body = { ...item, day, meal: foodMeal };
+    const { item: saved } = await (editing ? api(`meals/${editing.id}`, { method: "PUT", body }) : api("meals", { body }));
     if (current?.view === "meals" && mealDay === day) {
-      mealItems.push(saved);
+      setMealItems(editing ? mealItems.map((it) => (it.id === editing.id ? saved : it)) : [...mealItems, saved], day);
       drawMeals();
+    } else {
+      mealCache.delete(day);
     }
+    toast(editing ? "Saved" : `Added to ${MEAL_NAMES[saved.meal].toLowerCase()}`);
     $("#food").close();
   } catch (ex) {
     err.textContent = ex.message;
@@ -1648,7 +1943,11 @@ async function saveFood(form, item) {
 }
 
 $("#food-close").addEventListener("click", () => $("#food").close());
-$("#food").addEventListener("close", stopFoodCamera); // also covers the Esc key
+watchDialogHeight($("#food"), $("#food-body"));
+$("#food").addEventListener("close", () => {
+  stopFoodCamera(); // also covers the Esc key
+  foodEditing = null;
+});
 $("#food-body").addEventListener("change", (e) => {
   if (e.target.id === "food-meal") foodMeal = e.target.value;
   if (e.target.id === "food-photo" && e.target.files[0]) pickLabelPhoto(e.target.files[0]);
@@ -1673,7 +1972,11 @@ $("#food-body").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-food]");
   if (!btn) return;
   const act = btn.dataset.food;
-  if (act === "pick") pickFood(foodResults[Number(btn.dataset.i)]);
+  if (act === "pick") {
+    const food = foodResults[Number(btn.dataset.i)];
+    if (food.source === "manual") drawFoodManual(food);
+    else pickFood(food);
+  }
   else if (act === "manual") drawFoodManual();
   else if (act === "camera") openFoodCamera();
   else if (act === "shutter") takeLabelPhoto();
@@ -1686,7 +1989,28 @@ $("#food-body").addEventListener("click", (e) => {
         btn.textContent = ex.message;
       });
   }
-  else if (act === "back") {
+  else if (act === "delete-logged") {
+    const id = foodEditing.id;
+    $("#food").close();
+    removeLoggedFood(id);
+  } else if (act === "custom-edit") drawCustomFoodEdit(foodPicked);
+  else if (act === "custom-cancel") {
+    const food = foodEditingCustom;
+    foodEditingCustom = null;
+    drawFoodAmount(food);
+  } else if (act === "custom-remove") {
+    const food = foodPicked;
+    askConfirm({ title: `Remove "${food.name}"?`, message: "Anything you've already logged stays.", confirmLabel: "Remove" })
+      .then((yes) => yes && api(`food/custom/${food.id}`, { method: "DELETE" }).then(() => {
+        foodPicked = null;
+        foodResults = [];
+        drawFoodSearch();
+        loadFoodRecents();
+        toast(`Removed ${food.name}`);
+      }))
+      .catch((ex) => toast(ex.message, { error: true }));
+  } else if (act === "back") {
+    if (foodEditing) return $("#food").close();
     stopFoodCamera();
     foodPicked = null;
     drawFoodSearch();
@@ -1697,7 +2021,12 @@ $("#food-body").addEventListener("submit", (e) => {
   const form = e.target;
   if (form.id === "food-search") return runFoodSearch();
   if (!form.reportValidity()) return;
-  if (form.id === "food-scan-review") return saveScannedFood(form);
+  if (form.id === "food-scan-review") {
+    return submitCustomFood(form, () => api("food/custom", { body: { ...customFoodBody(), scanId: form.dataset.scan } }));
+  }
+  if (form.id === "food-custom-edit") {
+    return submitCustomFood(form, () => api(`food/custom/${foodEditingCustom.id}`, { method: "PUT", body: customFoodBody() }));
+  }
   if (form.id === "food-amount") {
     const f = foodPicked;
     const qty = Number(foodQty);
@@ -1709,6 +2038,7 @@ $("#food-body").addEventListener("submit", (e) => {
     const unit = $("#food-manual-unit").value;
     return saveFood(form, {
       name: $("#food-name").value,
+      brand: form.dataset.brand,
       kcal: $("#food-kcal").value,
       protein: $("#food-protein").value,
       carbs: $("#food-carbs").value,

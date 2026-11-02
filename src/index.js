@@ -184,7 +184,7 @@ const OFF_FIELDS = "code,product_name,brands,serving_size,serving_quantity,nutri
 async function offFetch(url, env, extraHeaders = {}, init = {}) {
   const contact = env.OFF_CONTACT ? ` (${env.OFF_CONTACT})` : "";
   return fetch(url, {
-    headers: { "user-agent": `LiftCraft/1.0${contact}`, ...extraHeaders },
+    headers: { "user-agent": `TorchRep/1.0${contact}`, ...extraHeaders },
     signal: AbortSignal.timeout(10000),
     cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": 86400, "300-599": 0 } },
     ...init,
@@ -356,7 +356,7 @@ async function searchOff(q, env) {
   return ((await res.json()).hits || []).map(normalizeFood).filter(Boolean);
 }
 
-// Generic USDA foods first, then branded products from both databases, without repeats.
+// The given foods first (past logs, scanned foods and generic USDA foods), then branded products from both databases, without repeats.
 function mergeFoods(generic, off, branded) {
   const ordered = [...generic];
   for (let i = 0; i < Math.max(off.length, branded.length); i++) {
@@ -396,13 +396,25 @@ async function handleFood(request, url, env, user) {
     if (action === "custom" && /^\d+$/.test(arg) && sub === "report") return reportCustomFood(Number(arg), env, user);
     return json({ error: "Not found." }, 404);
   }
+  if (action === "custom" && /^\d+$/.test(arg || "") && !sub) {
+    const id = Number(arg);
+    if (request.method === "PUT") return editCustomFood(id, request, env, user);
+    if (request.method === "DELETE") return deleteCustomFood(id, env, user);
+    if (request.method === "GET") {
+      const row = await loadCustomFood(id, env, user);
+      const reports = row && (await env.DB.prepare("SELECT COUNT(*) AS c FROM custom_food_reports WHERE food_id = ?").bind(id).first()).c;
+      const visible = row && (row.mine || (row.is_public === 1 && reports < REPORTS_TO_HIDE));
+      return visible ? json({ food: customFoodRow(row) }) : json({ error: "Not found." }, 404);
+    }
+  }
   if (request.method !== "GET") return json({ error: "Not found." }, 404);
+  if (action === "recent") return json({ foods: await recentFoods("", 12, env, user) });
   const busy = json({ error: "Food lookup is busy right now. Try again in a minute." }, 503);
   try {
     if (action === "search") {
       const q = (url.searchParams.get("q") || "").trim().slice(0, 100);
       if (q.length < 2) return json({ error: "Type at least 2 characters." }, 400);
-      const custom = await searchCustom(q, env, user);
+      const [recent, custom] = await Promise.all([recentFoods(q, 8, env, user), searchCustom(q, env, user)]);
       const results = await Promise.allSettled([
         searchFdc(q, FDC_GENERIC, 12, env),
         searchOff(q, env),
@@ -410,9 +422,9 @@ async function handleFood(request, url, env, user) {
       ]);
       // One database being down or rate limited shouldn't take search away.
       results.filter((r) => r.status === "rejected").forEach((r) => console.error(r.reason));
-      if (!custom.length && results.every((r) => r.status === "rejected")) return busy;
+      if (!recent.length && !custom.length && results.every((r) => r.status === "rejected")) return busy;
       const [generic, off, branded] = results.map((r) => (r.status === "fulfilled" ? r.value : []));
-      return json({ foods: mergeFoods([...custom, ...generic], off, branded) });
+      return json({ foods: mergeFoods([...recent, ...custom, ...generic], off, branded) });
     }
     if (action === "barcode" && /^\d{8,14}$/.test(arg || "")) {
       const results = await Promise.allSettled([barcodeOff(arg, env)]);
@@ -533,6 +545,8 @@ function customFoodRow(row) {
     name: row.name,
     brand: row.brand,
     isPublic: row.is_public === 1,
+    mine: row.mine === 1,
+    serving: { grams: row.serving_grams, label: row.serving_label, kcal: row.kcal, protein: row.protein, carbs: row.carbs, fat: row.fat },
     verifiedScans: row.verifiedScans ?? 0,
     scansToPublish: SCANS_TO_PUBLISH,
     per100: { kcal: per100(row.kcal), protein: per100(row.protein), carbs: per100(row.carbs), fat: per100(row.fat) },
@@ -540,37 +554,70 @@ function customFoodRow(row) {
   };
 }
 
-const CUSTOM_SELECT = `SELECT f.*, (SELECT COUNT(*) FROM custom_food_scans s WHERE s.food_id = f.id AND s.verified = 1) AS verifiedScans FROM custom_foods f`;
+// The first bound value is the current user, which decides "mine".
+const CUSTOM_SELECT = `SELECT f.*,
+  (SELECT COUNT(*) FROM custom_food_scans s WHERE s.food_id = f.id AND s.verified = 1) AS verifiedScans,
+  EXISTS (SELECT 1 FROM custom_food_scans s WHERE s.food_id = f.id AND s.user_id = ?) AS mine
+  FROM custom_foods f`;
+// One LIKE pattern per word, so "greek yogurt" also finds "Yogurt, Greek, with oats".
+const wordPatterns = (q) => q.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8).map((w) => `%${w.replace(/[\\%_]/g, "\\$&")}%`);
+const wordClauses = (column, words) => words.map(() => `AND ${column} LIKE ? ESCAPE '\\'`).join(" ");
 
 // Public foods that haven't been reported down, plus whatever this user has scanned themselves.
 async function searchCustom(q, env, user) {
-  const like = `%${q.toLowerCase().replace(/\s+/g, " ").replace(/[\\%_]/g, "\\$&")}%`;
+  const words = wordPatterns(q);
   const { results } = await env.DB.prepare(
     `${CUSTOM_SELECT}
-     WHERE f.name_key LIKE ? ESCAPE '\\'
+     WHERE 1 = 1 ${wordClauses("f.name_key", words)}
        AND ((f.is_public = 1 AND (SELECT COUNT(*) FROM custom_food_reports r WHERE r.food_id = f.id) < ?)
             OR EXISTS (SELECT 1 FROM custom_food_scans s WHERE s.food_id = f.id AND s.user_id = ?))
      ORDER BY f.is_public DESC, f.name LIMIT 10`,
-  ).bind(like, REPORTS_TO_HIDE, user.id).all();
+  ).bind(user.id, ...words, REPORTS_TO_HIDE, user.id).all();
   return results.map(customFoodRow);
 }
 
-async function saveCustomFood(request, env, user) {
-  const body = await request.json().catch(() => ({}));
+// Validates a custom food's name and numbers. Physically impossible numbers mean a misread, so they're refused.
+function parseCustomFood(body) {
   const name = normalizeName(body.name).slice(0, 80);
-  if (!name) return json({ error: "Enter the item's name." }, 400);
+  if (!name) return { error: "Enter the item's name." };
   const numbers = {};
   for (const [key, max] of [["servingGrams", 5000], ["kcal", 5000], ["protein", 1000], ["carbs", 1000], ["fat", 1000]]) {
     const v = body[key] === "" || body[key] == null ? NaN : Number(body[key]);
-    if (!Number.isFinite(v) || v < 0 || v > max) return json({ error: "Fill in every number from the label." }, 400);
+    if (!Number.isFinite(v) || v < 0 || v > max) return { error: "Fill in every number from the label." };
     numbers[key] = round1(v);
   }
   const { servingGrams, kcal, protein, carbs, fat } = numbers;
-  if (servingGrams <= 0) return json({ error: "Enter the serving size in grams or ml." }, 400);
-  // Physically impossible numbers mean a misread, so they don't get saved at all.
+  if (servingGrams <= 0) return { error: "Enter the serving size in grams or ml." };
   if (protein + carbs + fat > servingGrams * 1.05 || (kcal / servingGrams) * 100 > 950) {
-    return json({ error: "Those numbers don't add up. Check them against the label." }, 400);
+    return { error: "Those numbers don't add up. Check them against the label." };
   }
+  return {
+    ...numbers,
+    name,
+    nameKey: name.toLowerCase(),
+    brand: cleanName(body.brand),
+    servingLabel: cleanName(body.servingLabel),
+    fingerprint: [servingGrams, kcal, protein, carbs, fat].join("|"),
+    // Calories should roughly match 4/4/9 per gram. Alcohol and sugar alcohols can break this, so those stay private.
+    plausible: Math.abs(kcal - (4 * protein + 4 * carbs + 9 * fat)) <= Math.max(15, kcal * 0.2) ? 1 : 0,
+  };
+}
+
+// Finds the row for this name and these numbers, creating it if needed, and returns its id.
+async function upsertCustomFood(f, env) {
+  await env.DB.prepare(
+    `INSERT INTO custom_foods (name, name_key, brand, fingerprint, serving_label, serving_grams, kcal, protein, carbs, fat, plausible)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name_key, fingerprint) DO NOTHING`,
+  ).bind(f.name, f.nameKey, f.brand, f.fingerprint, f.servingLabel, f.servingGrams, f.kcal, f.protein, f.carbs, f.fat, f.plausible).run();
+  return (await env.DB.prepare("SELECT id FROM custom_foods WHERE name_key = ? AND fingerprint = ?").bind(f.nameKey, f.fingerprint).first()).id;
+}
+
+const loadCustomFood = (id, env, user) => env.DB.prepare(`${CUSTOM_SELECT} WHERE f.id = ?`).bind(user.id, id).first();
+
+async function saveCustomFood(request, env, user) {
+  const body = await request.json().catch(() => ({}));
+  const f = parseCustomFood(body);
+  if (f.error) return json({ error: f.error }, 400);
 
   const scan = await env.DB.prepare("SELECT reading FROM label_scans WHERE id = ? AND user_id = ? AND used_at IS NULL AND reading <> ''")
     .bind(String(body.scanId ?? ""), user.id).first();
@@ -580,17 +627,9 @@ async function saveCustomFood(request, env, user) {
 
   const read = JSON.parse(scan.reading);
   const same = (printed, value) => printed != null && round1(printed) === value;
-  const unedited = same(read.serving_grams, servingGrams) && same(read.calories, kcal) && same(read.protein_g, protein) && same(read.carbs_g, carbs) && same(read.fat_g, fat);
-  // Calories should roughly match 4/4/9 per gram. Alcohol and sugar alcohols can break this, so those stay private.
-  const plausible = Math.abs(kcal - (4 * protein + 4 * carbs + 9 * fat)) <= Math.max(15, kcal * 0.2) ? 1 : 0;
-  const nameKey = name.toLowerCase();
-  const fingerprint = [servingGrams, kcal, protein, carbs, fat].join("|");
+  const unedited = same(read.serving_grams, f.servingGrams) && same(read.calories, f.kcal) && same(read.protein_g, f.protein) && same(read.carbs_g, f.carbs) && same(read.fat_g, f.fat);
 
-  await env.DB.prepare(
-    `INSERT INTO custom_foods (name, name_key, brand, fingerprint, serving_label, serving_grams, kcal, protein, carbs, fat, plausible)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (name_key, fingerprint) DO NOTHING`,
-  ).bind(name, nameKey, cleanName(body.brand), fingerprint, cleanName(body.servingLabel), servingGrams, kcal, protein, carbs, fat, plausible).run();
-  const { id } = await env.DB.prepare("SELECT id FROM custom_foods WHERE name_key = ? AND fingerprint = ?").bind(nameKey, fingerprint).first();
+  const id = await upsertCustomFood(f, env);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO custom_food_scans (food_id, user_id, verified) VALUES (?, ?, ?)
@@ -601,8 +640,83 @@ async function saveCustomFood(request, env, user) {
        WHERE id = ? AND plausible = 1 AND (SELECT COUNT(*) FROM custom_food_scans s WHERE s.food_id = ? AND s.verified = 1) >= ?`,
     ).bind(id, id, SCANS_TO_PUBLISH),
   ]);
-  const row = await env.DB.prepare(`${CUSTOM_SELECT} WHERE f.id = ?`).bind(id).first();
-  return json({ food: customFoodRow(row), counted: unedited }, 201);
+  return json({ food: customFoodRow(await loadCustomFood(id, env, user)), counted: unedited }, 201);
+}
+
+// Takes this user off a food, and deletes the food if nobody else has it and it isn't public.
+function leaveCustomFood(id, user, env) {
+  return env.DB.batch([
+    env.DB.prepare("DELETE FROM custom_food_scans WHERE food_id = ? AND user_id = ?").bind(id, user.id),
+    env.DB.prepare("DELETE FROM custom_foods WHERE id = ? AND is_public = 0 AND NOT EXISTS (SELECT 1 FROM custom_food_scans s WHERE s.food_id = ?)").bind(id, id),
+  ]);
+}
+
+// Shared rows are never changed in place. An edit moves this user onto their own private version,
+// which can't count toward going public, so other people's foods stay as scanned.
+async function editCustomFood(id, request, env, user) {
+  const row = await loadCustomFood(id, env, user);
+  if (!row?.mine) return json({ error: "Not found." }, 404);
+  const f = parseCustomFood(await request.json().catch(() => ({})));
+  if (f.error) return json({ error: f.error }, 400);
+  if (f.nameKey === row.name_key && f.fingerprint === row.fingerprint) {
+    await env.DB.prepare(
+      `UPDATE custom_foods SET name = ?, brand = ?, serving_label = ?
+       WHERE id = ? AND is_public = 0 AND (SELECT COUNT(*) FROM custom_food_scans s WHERE s.food_id = ?) = 1`,
+    ).bind(f.name, f.brand, f.servingLabel, id, id).run();
+  } else {
+    const newId = await upsertCustomFood(f, env);
+    await env.DB.prepare("INSERT OR IGNORE INTO custom_food_scans (food_id, user_id, verified) VALUES (?, ?, 0)").bind(newId, user.id).run();
+    await leaveCustomFood(id, user, env);
+    return json({ food: customFoodRow(await loadCustomFood(newId, env, user)) });
+  }
+  return json({ food: customFoodRow(await loadCustomFood(id, env, user)) });
+}
+
+async function deleteCustomFood(id, env, user) {
+  const row = await loadCustomFood(id, env, user);
+  if (!row?.mine) return json({ error: "Not found." }, 404);
+  await leaveCustomFood(id, user, env);
+  return json({ ok: true });
+}
+
+// Foods this user has logged, newest first, one entry per name and brand, built from their last log.
+async function recentFoods(q, limit, env, user) {
+  const words = wordPatterns(q);
+  const where = wordClauses("lower(name || ' ' || brand)", words);
+  const { results } = await env.DB.prepare(
+    `SELECT m.* FROM meal_items m
+     JOIN (SELECT MAX(id) AS id FROM meal_items WHERE user_id = ? ${where} GROUP BY lower(name), lower(brand)) latest ON latest.id = m.id
+     WHERE m.source <> 'custom'
+        OR EXISTS (SELECT 1 FROM custom_food_scans s WHERE s.food_id = CAST(m.code AS INTEGER) AND s.user_id = m.user_id)
+        OR EXISTS (SELECT 1 FROM custom_foods f WHERE f.id = CAST(m.code AS INTEGER) AND f.is_public = 1
+                   AND (SELECT COUNT(*) FROM custom_food_reports r WHERE r.food_id = f.id) < ?)
+     ORDER BY m.id DESC LIMIT ?`,
+  ).bind(user.id, ...words, REPORTS_TO_HIDE, limit).all();
+  return results.map(recentFoodRow);
+}
+
+function recentFoodRow(m) {
+  const source = m.source || (m.code ? "off" : "");
+  // Typed by hand, so there's nothing to scale from. It reopens the manual form instead.
+  if (!source || !(m.grams > 0)) {
+    return { source: "manual", recent: true, id: String(m.id), code: "", name: m.name, brand: m.brand, qty: m.qty, unit: m.unit, grams: m.grams, kcal: m.kcal, protein: m.protein, carbs: m.carbs, fat: m.fat };
+  }
+  const per100 = (v) => (v == null ? null : (v / m.grams) * 100);
+  const qty = m.qty > 0 && m.unit ? m.qty : null;
+  const isHousehold = qty && !["g", "ml", "oz"].includes(m.unit);
+  const built = buildMeasures(m.name, isHousehold ? [[m.unit, m.grams / qty]] : []);
+  return {
+    source,
+    recent: true,
+    id: m.code,
+    code: source === "off" ? m.code : "",
+    name: m.name,
+    brand: m.brand,
+    per100: { kcal: per100(m.kcal), protein: per100(m.protein), carbs: per100(m.carbs), fat: per100(m.fat) },
+    ...built,
+    ...(qty && m.unit === "ml" ? { gPerMl: m.grams / qty, densityKnown: true } : {}),
+    last: qty ? { qty, unit: m.unit } : { qty: m.grams, unit: "g" },
+  };
 }
 
 async function reportCustomFood(id, env, user) {
@@ -681,7 +795,7 @@ async function handleData(request, env, url, user) {
       const day = url.searchParams.get("day");
       if (!validDay(day)) return json({ error: "Enter a valid day." }, 400);
       const r = await env.DB.prepare(
-        "SELECT id, meal, name, brand, qty, unit, grams, kcal, protein, carbs, fat FROM meal_items WHERE user_id = ? AND day = ? ORDER BY id",
+        "SELECT id, meal, name, brand, source, code, qty, unit, grams, kcal, protein, carbs, fat FROM meal_items WHERE user_id = ? AND day = ? ORDER BY id",
       ).bind(user.id, day).all();
       return json({ items: r.results });
     }
@@ -691,7 +805,18 @@ async function handleData(request, env, url, user) {
       const r = await env.DB.prepare(
         "INSERT INTO meal_items (user_id, day, meal, name, brand, code, source, qty, unit, grams, kcal, protein, carbs, fat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).bind(user.id, v.day, v.meal, v.name, v.brand, v.code, v.source, v.qty, v.unit, v.grams, v.kcal, v.protein, v.carbs, v.fat).run();
-      return json({ item: { id: r.meta.last_row_id, meal: v.meal, name: v.name, brand: v.brand, qty: v.qty, unit: v.unit, grams: v.grams, kcal: v.kcal, protein: v.protein, carbs: v.carbs, fat: v.fat } }, 201);
+      return json({ item: { id: r.meta.last_row_id, meal: v.meal, name: v.name, brand: v.brand, source: v.source, code: v.code, qty: v.qty, unit: v.unit, grams: v.grams, kcal: v.kcal, protein: v.protein, carbs: v.carbs, fat: v.fat } }, 201);
+    }
+    if (method === "PUT" && id) {
+      const v = parseMealItem(body);
+      if (v.error) return json({ error: v.error }, 400);
+      // Which food this came from never changes, only what was eaten.
+      const r = await env.DB.prepare(
+        "UPDATE meal_items SET day = ?, meal = ?, name = ?, brand = ?, qty = ?, unit = ?, grams = ?, kcal = ?, protein = ?, carbs = ?, fat = ? WHERE id = ? AND user_id = ?",
+      ).bind(v.day, v.meal, v.name, v.brand, v.qty, v.unit, v.grams, v.kcal, v.protein, v.carbs, v.fat, id, user.id).run();
+      if (!r.meta.changes) return json({ error: "Not found." }, 404);
+      const item = await env.DB.prepare("SELECT id, meal, name, brand, source, code, qty, unit, grams, kcal, protein, carbs, fat FROM meal_items WHERE id = ?").bind(id).first();
+      return json({ item });
     }
     if (method === "DELETE" && id) {
       await env.DB.prepare("DELETE FROM meal_items WHERE id = ? AND user_id = ?").bind(id, user.id).run();
