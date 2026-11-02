@@ -45,11 +45,11 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       <span>Home</span>
     </button>
-    <button data-tab="progress" aria-label="Progress">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="10"/></svg>
-      <span>Progress</span>
+    <button data-tab="meals" aria-label="Meals">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v20"/><path d="M4 2v6a3 3 0 0 0 6 0V2"/><path d="M18 22V2c-2.5 1-4 3.5-4 7v4h4"/></svg>
+      <span>Meals</span>
     </button>
-    <button data-tab="add" class="add" aria-label="Add exercise">
+    <button data-tab="add" class="add" aria-label="Add">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       <span>Add</span>
     </button>
@@ -88,6 +88,14 @@
     <p id="sudoku-status" class="sudoku-status muted"></p>
     <div id="sudoku-grid" class="sudoku-grid"></div>
     <div class="sudoku-actions"><button type="button" id="sudoku-new" class="ghost">New puzzle</button></div>
+  </dialog>
+
+  <dialog id="food">
+    <div class="sudoku-head">
+      <h3 id="food-title">Add food</h3>
+      <button type="button" id="food-close" class="icon-btn" aria-label="Close">✕</button>
+    </div>
+    <div id="food-body"></div>
   </dialog>
   <script src="/app.js"></script>
 </body>
