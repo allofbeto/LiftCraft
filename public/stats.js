@@ -5,7 +5,7 @@ const LB_PER_KG = 2.20462;
 let mealStatsDays = 30;
 let mealStatsData = null;
 let mealStatsSeq = 0; // only the newest request may draw
-let exerciseStatsDays = 90; // 0 means all time
+let exerciseStatsPeriod = "week";
 
 // Reads a set line as written by commitSet: "9:14:02 AM · 135 lb × 8", "Bodyweight × L 5 / R 6".
 // Anything else in a note is the user's own text and isn't counted.
@@ -22,7 +22,6 @@ function parseSets(note) {
     sets.push({
       weight: m[1] === undefined ? null : Number(m[1]),
       unit: m[2]?.toLowerCase() ?? null,
-      reps: split ? left + right : Number(m[5]), // every rep moved, for volume
       best: split ? Math.max(left, right) : Number(m[5]), // what one side managed, for strength
       repsText: split ? `L ${left} / R ${right}` : m[5],
     });
@@ -247,8 +246,6 @@ function setMealStatsRange(days) {
 
 /* ---------- one exercise ---------- */
 
-const EXERCISE_RANGES = [[30, "30 days"], [90, "90 days"], [365, "1 year"], [0, "All"]];
-
 // Every set in an exercise's notes, with its weight in whichever unit the user mostly lifts in.
 function exerciseSummary(notes) {
   const sets = Object.entries(notes).flatMap(([day, note]) => parseSets(note).map((s) => ({ ...s, day })));
@@ -264,8 +261,6 @@ function exerciseSummary(notes) {
   return { sets, unit, weighted: sets.some((s) => s.e1rm !== null) };
 }
 
-const volumeOf = (sets) => sets.reduce((t, s) => t + (s.load === null ? 0 : s.load * s.reps), 0);
-const repsOf = (sets) => sets.reduce((t, s) => t + s.reps, 0);
 
 function groupByDay(sets) {
   const groups = new Map();
@@ -285,81 +280,141 @@ function exerciseRecordsHtml({ sets, unit, weighted }) {
     const withLoad = sets.filter((s) => s.e1rm !== null);
     const strongest = bestBy(withLoad, "e1rm");
     const heaviest = bestBy(withLoad, "load");
-    const biggest = sessions.reduce((a, b) => (volumeOf(b[1]) > volumeOf(a[1]) ? b : a));
+    const mostReps = bestBy(withLoad, "best");
     return `
       ${statTile(`${fmtNumber(strongest.e1rm)} ${unit}`, `Best est. 1RM · ${strongest.text}`)}
       ${statTile(`${fmtNumber(heaviest.load)} ${unit}`, `Heaviest set · × ${heaviest.repsText}, ${shortDay(heaviest.day)}`)}
-      ${statTile(`${fmtCompact(volumeOf(biggest[1]))} ${unit}`, `Biggest session · ${shortDay(biggest[0])}`)}
+      ${statTile(mostReps.best, `Most reps in a set · ${mostReps.weight} ${mostReps.unit}, ${shortDay(mostReps.day)}`)}
       ${statTile(sessions.length, "Days trained")}`;
   }
   const most = bestBy(sets, "best");
-  const biggest = sessions.reduce((a, b) => (repsOf(b[1]) > repsOf(a[1]) ? b : a));
+  const busiest = sessions.reduce((a, b) => (b[1].length > a[1].length ? b : a));
   return `
     ${statTile(most.best, `Most reps in a set · ${shortDay(most.day)}`)}
-    ${statTile(repsOf(biggest[1]), `Most reps in a day · ${shortDay(biggest[0])}`)}
-    ${statTile(fmtNumber(repsOf(sets)), "Total reps")}
+    ${statTile(busiest[1].length, `Most sets in a day · ${shortDay(busiest[0])}`)}
+    ${statTile(fmtNumber(sets.length), "Sets logged")}
     ${statTile(sessions.length, "Days trained")}`;
 }
 
-function strengthCardHtml(sessions, days, { unit, weighted }) {
-  const key = weighted ? "e1rm" : "best";
-  const measure = weighted ? `${unit} est. 1RM` : "reps";
-  const points = sessions
-    .map(([day, sets]) => ({ day, set: bestBy(sets.filter((s) => s[key] !== null), key) }))
-    .filter((p) => p.set && p.set[key] > 0)
-    .map((p) => ({ ...p, score: p.set[key] }));
-  if (!points.length) return "";
-  const start = keyToDate(days[0]);
-  const rows = points.map((p) => ({
-    x: Math.round((keyToDate(p.day) - start) / 864e5) / Math.max(days.length - 1, 1),
-    value: p.score,
-    label: `${shortDay(p.day)} · ${p.set.text}`,
-    text: `${fmtNumber(p.score)} ${measure}`,
-  }));
-  const change = Math.round(points.at(-1).score) - Math.round(points[0].score);
-  const note = `Latest ${fmtNumber(points.at(-1).score)} ${measure}${points.length > 1 ? ` · ${change > 0 ? "+" : ""}${fmtNumber(change)} ${weighted ? unit : "reps"} over this range` : ""}`;
-  const table = chartTable("View as table", ["Day", "Best set", weighted ? "Est. 1RM" : "Reps"], points.map((p) => [shortDay(p.day), p.set.text, fmtNumber(p.score)]));
-  return statCard(weighted ? "Strength" : "Best set", note, lineChart({ label: `${weighted ? "Estimated one-rep max" : "Most reps in a set"} over time`, rows, xLabels: statAxis(days), table }));
+// A calendar week (Sunday first, as in the exercise journal), month or year, counted back from the current one.
+const STAT_PERIODS = {
+  week: { tab: "Weekly", word: "week", now: "this week", prev: "last week", across: "these 12 weeks" },
+  month: { tab: "Monthly", word: "month", now: "this month", prev: "last month", across: "these 12 months" },
+  year: { tab: "Annually", word: "year", now: "this year", prev: "last year", across: "these years" },
+};
+
+function periodAt(kind, back) {
+  const now = new Date();
+  if (kind === "week") {
+    const from = startOfWeek(now);
+    from.setDate(from.getDate() - back * 7);
+    const to = new Date(from);
+    to.setDate(to.getDate() + 6);
+    return { start: localKey(from), end: localKey(to), label: `Week of ${shortDay(localKey(from))}`, short: shortDay(localKey(from)) };
+  }
+  if (kind === "month") {
+    const from = new Date(now.getFullYear(), now.getMonth() - back, 1);
+    const prefix = localKey(from).slice(0, 7);
+    return {
+      start: `${prefix}-01`,
+      end: `${prefix}-31`,
+      label: from.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+      short: from.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+    };
+  }
+  const year = now.getFullYear() - back;
+  return { start: `${year}-01-01`, end: `${year}-12-31`, label: String(year), short: String(year) };
 }
 
-function workloadCardHtml(sets, days, { unit, weighted }) {
-  const word = bucketWord(days);
-  const rows = statBuckets(days).map((b) => {
-    const inBucket = sets.filter((s) => b.days.includes(s.day));
-    const value = weighted ? volumeOf(inBucket) : repsOf(inBucket);
-    const text = !inBucket.length ? "No sets" : `${fmtNumber(value)} ${weighted ? unit : "reps"} · ${plural(inBucket.length, "set")}`;
-    return { label: b.label, value, text };
+// Oldest first, ending with the current period. Years go back as far as the training does.
+function statPeriods(kind, sets) {
+  const firstYear = sets.reduce((y, s) => Math.min(y, Number(s.day.slice(0, 4))), new Date().getFullYear());
+  const count = kind === "year" ? new Date().getFullYear() - firstYear + 1 : 12;
+  return Array.from({ length: count }, (_, i) => periodAt(kind, count - 1 - i));
+}
+
+const periodHeading = (kind) => STAT_PERIODS[kind].word[0].toUpperCase() + STAT_PERIODS[kind].word.slice(1);
+
+const setsIn = (sets, period) => sets.filter((s) => s.day >= period.start && s.day <= period.end);
+
+const periodAxis = (periods) => (periods.length < 3 ? periods.map((x) => x.short) : [periods[0].short, periods[Math.floor(periods.length / 2)].short, periods.at(-1).short]);
+
+function strengthCardHtml(periods, sets, kind, { unit, weighted }) {
+  const key = weighted ? "e1rm" : "best";
+  const measure = weighted ? `${unit} est. 1RM` : "reps";
+  const points = periods
+    .map((period, i) => ({ period, i, set: bestBy(setsIn(sets, period).filter((s) => s[key] > 0), key) }))
+    .filter((x) => x.set);
+  if (!points.length) return "";
+  const rows = points.map(({ period, i, set }) => ({
+    x: i / Math.max(periods.length - 1, 1),
+    value: set[key],
+    label: `${period.label} · ${set.text}`,
+    text: `${fmtNumber(set[key])} ${measure}`,
+  }));
+  const change = Math.round(points.at(-1).set[key]) - Math.round(points[0].set[key]);
+  const note = `Latest ${fmtNumber(points.at(-1).set[key])} ${measure}${points.length > 1 ? ` · ${change > 0 ? "+" : ""}${fmtNumber(change)} ${weighted ? unit : "reps"} over ${STAT_PERIODS[kind].across}` : ""}`;
+  const table = chartTable("View as table", [periodHeading(kind), "Best set", weighted ? "Est. 1RM" : "Reps"], [...points].reverse().map(({ period, set }) => [period.label, set.text, fmtNumber(set[key])]));
+  return statCard(weighted ? "Strength" : "Best set", note, lineChart({ label: `${weighted ? "Estimated one-rep max" : "Most reps in a set"} by ${STAT_PERIODS[kind].word}`, rows, xLabels: periodAxis(periods), table }));
+}
+
+function setsCardHtml(periods, sets, kind) {
+  const word = STAT_PERIODS[kind].word;
+  const rows = periods.map((period) => {
+    const count = setsIn(sets, period).length;
+    return { label: period.label, value: count, text: count ? plural(count, "set") : "No sets" };
   });
-  const title = weighted ? "Volume" : "Total reps";
-  const table = chartTable("View as table", [word === "day" ? "Day" : word === "week" ? "Week" : "Month", title], rows.map((r) => [r.label, r.text]));
-  return statCard(title, `${weighted ? "Weight × reps" : "Reps"} per ${word}`, columnChart({ label: `${title} per ${word}`, rows, xLabels: statAxis(days), table }));
+  const table = chartTable("View as table", [periodHeading(kind), "Sets"], [...rows].reverse().map((r) => [r.label, r.text]));
+  return statCard("Sets", `Per ${word}`, columnChart({ label: `Sets per ${word}`, rows, xLabels: periodAxis(periods), table }));
+}
+
+// This period's tile, with the one before it for comparison.
+function periodTile(value, label, previous, names) {
+  return statTile(value, `${label} ${names.now} · ${previous} ${names.prev}`);
 }
 
 function exerciseRangeHtml(summary) {
   const { sets, unit, weighted } = summary;
-  const firstDay = sets.reduce((a, s) => (s.day < a ? s.day : a), localKey(new Date()));
-  const days = exerciseStatsDays ? lastDays(exerciseStatsDays) : daysSince(firstDay);
-  const inRange = sets.filter((s) => s.day >= days[0]);
-  if (!inRange.length) return `<div class="empty">No sets in this range.</div>`;
+  const kind = exerciseStatsPeriod;
+  const names = STAT_PERIODS[kind];
+  const periods = statPeriods(kind, sets);
+  const shown = sets.filter((s) => s.day >= periods[0].start);
+  const nowSets = setsIn(sets, periodAt(kind, 0));
+  const prevSets = setsIn(sets, periodAt(kind, 1));
+  const sessionCount = (list) => new Set(list.map((s) => s.day)).size;
+  const heaviest = (list) => {
+    const top = bestBy(list.filter((s) => s.load !== null), "load");
+    return top ? `${fmtNumber(top.load)} ${unit}` : "–";
+  };
+  const strongest = (list) => {
+    const top = bestBy(list.filter((s) => s.e1rm !== null), "e1rm");
+    return top ? `${fmtNumber(top.e1rm)} ${unit}` : "–";
+  };
+  const mostReps = (list) => (list.length ? bestBy(list, "best").best : "–");
+  const tiles = `
+    ${periodTile(sessionCount(nowSets), "Sessions", sessionCount(prevSets), names)}
+    ${periodTile(nowSets.length, "Sets", prevSets.length, names)}
+    ${
+      weighted
+        ? `${periodTile(heaviest(nowSets), "Heaviest", heaviest(prevSets), names)}
+           ${periodTile(strongest(nowSets), "Est. 1RM", strongest(prevSets), names)}`
+        : periodTile(mostReps(nowSets), "Most reps", mostReps(prevSets), names)
+    }`;
 
-  const sessions = groupByDay(inRange);
+  if (!shown.length) return `<div class="stats">${tiles}</div><div class="empty">No sets in these ${names.word}s.</div>`;
+  const sessions = groupByDay(shown);
   const recent = sessions.slice(-10).reverse();
   const sessionRows = recent.map(([day, list]) => {
     const key = weighted ? "e1rm" : "best";
     const top = bestBy(list.filter((s) => s[key] !== null), key) || list[0];
-    return [shortDay(day), top.text, list.length, weighted ? `${fmtNumber(volumeOf(list))} ${unit}` : fmtNumber(repsOf(list))];
+    return [shortDay(day), top.text, list.length];
   });
   return `
-    <div class="stats">
-      ${statTile(sessions.length, "Sessions")}
-      ${statTile(fmtNumber(inRange.length), "Sets")}
-      ${weighted ? statTile(`${fmtCompact(volumeOf(inRange))} ${unit}`, "Volume") : statTile(fmtNumber(repsOf(inRange)), "Total reps")}
-      ${statTile(Math.round((inRange.length / sessions.length) * 10) / 10, "Sets per session")}
-    </div>
-    ${strengthCardHtml(sessions, days, summary)}
-    ${workloadCardHtml(inRange, days, summary)}
+    <div class="stats">${tiles}</div>
+    ${strengthCardHtml(periods, shown, kind, summary)}
+    ${setsCardHtml(periods, shown, kind)}
     ${statCard("Recent sessions", sessions.length > 10 ? "Latest 10, with each day's best set" : "With each day's best set", `<div class="chart-table"><table>
-        <thead><tr><th scope="col">Day</th><th scope="col">Best set</th><th scope="col">Sets</th><th scope="col">${weighted ? "Volume" : "Reps"}</th></tr></thead>
+        <thead><tr><th scope="col">Day</th><th scope="col">Best set</th><th scope="col">Sets</th></tr></thead>
         <tbody>${sessionRows.map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody>
       </table></div>`)}`;
 }
@@ -380,15 +435,21 @@ function drawExerciseStats() {
         ? `<h2 class="section">All time</h2>
            <div class="stats">${exerciseRecordsHtml(summary)}</div>
            <h2 class="section">Over time</h2>
-           ${rangePicker("exercise-range", EXERCISE_RANGES, exerciseStatsDays)}
+           <div class="tabs range-picker" role="radiogroup" aria-label="Group by">
+             ${Object.entries(STAT_PERIODS).map(([id, x]) => `<button role="radio" data-act="exercise-period" data-period="${id}" aria-checked="${id === exerciseStatsPeriod}" class="${id === exerciseStatsPeriod ? "active" : ""}">${x.tab}</button>`).join("")}
+           </div>
            <div id="stats-body">${exerciseRangeHtml(summary)}</div>`
         : emptyHero("Log a set to see stats for this exercise.")
     }`;
 }
 
-function setExerciseStatsRange(days) {
-  exerciseStatsDays = days;
-  markRange(days);
+function setExerciseStatsPeriod(kind) {
+  exerciseStatsPeriod = kind;
+  for (const b of document.querySelectorAll(".range-picker button")) {
+    const on = b.dataset.period === kind;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-checked", on);
+  }
   clearChartTip();
   $("#stats-body").innerHTML = exerciseRangeHtml(exerciseSummary(detail.notes));
   animateIn($("#stats-body"));

@@ -879,8 +879,8 @@ const actions = {
   "meal-range"(d) {
     return setMealStatsRange(Number(d.days));
   },
-  "exercise-range"(d) {
-    setExerciseStatsRange(Number(d.days));
+  "exercise-period"(d) {
+    setExerciseStatsPeriod(d.period);
   },
 };
 

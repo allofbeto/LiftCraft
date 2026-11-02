@@ -23,14 +23,14 @@ function axisTicks(min, max, count = 3) {
 
 const slotAttrs = (r) => `data-label="${esc(r.label)}" data-text="${esc(r.text)}"`;
 
-function chartFrame({ label, ticks, pct, plot, xLabels, table }) {
+function chartFrame({ label, ticks, pct, plot, xLabels, table, slotLabels }) {
   return `
     <figure class="chart" tabindex="0" role="group" aria-label="${esc(label)}. Use the arrow keys to read each value.">
       <div class="plot">
         ${ticks.map((t) => `<div class="tick" style="bottom:${pct(t)}%"><span>${t >= 10000 ? fmtCompact(t) : t.toLocaleString("en-US", { maximumFractionDigits: 1 })}</span></div>`).join("")}
         ${plot}
       </div>
-      <div class="x-axis">${xLabels.map((l) => `<span>${esc(l)}</span>`).join("")}</div>
+      <div class="x-axis${slotLabels ? " under-slots" : ""}"${slotLabels ? ` style="grid-template-columns:repeat(${xLabels.length},1fr)"` : ""}>${xLabels.map((l) => `<span>${esc(l)}</span>`).join("")}</div>
       <div class="chart-tip" hidden aria-live="polite"></div>
     </figure>
     ${table || ""}`;
@@ -46,7 +46,8 @@ function columnChart({ label, rows, xLabels, line, table }) {
       ${rows.map((r) => `<div class="slot" ${slotAttrs(r)}>${r.value > 0 ? `<i class="bar" style="height:${pct(r.value)}%"></i>` : ""}</div>`).join("")}
     </div>
     ${line ? `<div class="ref-line" style="bottom:${pct(line)}%"></div>` : ""}`;
-  return chartFrame({ label, ticks, pct, plot, xLabels, table });
+  // With a label for every bar, each one sits under its bar rather than along the axis.
+  return chartFrame({ label, ticks, pct, plot, xLabels, table, slotLabels: xLabels.length === rows.length });
 }
 
 // rows: { x (0 to 1 along the range), value, label, text }, in time order.

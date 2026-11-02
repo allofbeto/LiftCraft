@@ -2,6 +2,7 @@
 
 let bodyLogs = null; // every entry, newest first
 let bodyDays = 90; // chart range, 0 means all time
+const BODY_RANGES = [[30, "30 days"], [90, "90 days"], [365, "1 year"], [0, "All"]];
 
 function resetBody() {
   bodyLogs = null;
@@ -120,7 +121,7 @@ function bodySectionHtml() {
     </section>
     ${
       bodyLogs.length
-        ? `${rangePicker("body-range", EXERCISE_RANGES, bodyDays)}
+        ? `${rangePicker("body-range", BODY_RANGES, bodyDays)}
            <div id="body-charts">${bodyChartsHtml()}</div>
            <h2 class="section">Recent entries</h2>
            ${recent}`
